@@ -1,7 +1,8 @@
-"""Lari hosted STT backends: ElevenLabs Scribe, Groq Whisper, and OpenAI Whisper.
+"""Cloud STT backends for desk-buddy: A) ElevenLabs Scribe v2, B) Groq Whisper
+Large V3 Turbo, C) OpenAI Whisper API (the cloud path of OpenWhispr).
 
-These providers receive audio for transcription. API keys are read from the
-process environment and are never logged.
+Privacy: these send the utterance audio to the provider. Keys come from the
+environment (never logged): ELEVENLABS_API_KEY, GROQ_API_KEY, OPENAI_API_KEY.
 
 Interface: transcribe(pcm_int16_16k_mono, backend) -> text.
 """
@@ -29,15 +30,6 @@ import websockets
 
 log = logging.getLogger(__name__)
 
-
-def _setting(name: str, default=None):
-    return os.environ.get(f"LARI_{name}", os.environ.get(f"BUDDY_{name}", default))
-
-
-LANGUAGE = str(_setting("LANGUAGE", "it")).strip().lower()
-WAKE_PHRASE = str(os.environ.get(
-    "LARI_WAKE_PHRASE", "Ehi Lari" if LANGUAGE == "it" else "Hey Lari"
-)).strip()
 BACKENDS = ("elevenlabs", "groq", "openai")
 REALTIME_BACKEND = "elevenlabs_realtime"
 KEY_ENV = {
@@ -45,17 +37,33 @@ KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
-KEYTERMS = [WAKE_PHRASE]
-REALTIME_KEYTERMS = (WAKE_PHRASE,)
+# ElevenLabs batch keyterms (<= 5 parole ciascuno, <= 1000 totali): bias sui
+# nomi propri che sbaglia più spesso. Scribe v2 con keyterms costa +20% sul base.
+KEYTERMS = [
+    "Hey Nic",
+    "Ehi Nic",
+    "centro commerciale Aura",
+    "Roma Termini",
+]
+# Realtime accepts at most 20 characters per keyterm. These are encoded as
+# repeated query parameters below, as required by the WebSocket API.
+REALTIME_KEYTERMS = (
+    "Hey Nic",
+    "Ehi Nic",
+    "Aura",
+    "Roma Termini",
+)
+# Groq/OpenAI accettano solo un prompt di stile (max 224 token per Groq).
 STYLE_PROMPT = (
-    f"Language: {'English' if LANGUAGE == 'en' else 'Italian'}. Wake phrase: {WAKE_PHRASE}."
+    "Italiano. Frase di sveglia: Hey Nic / Ehi Nic. "
+    "Nomi propri: Nic, Aura (centro commerciale Aura), Roma Termini."
 )
 
 REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?" + urlencode(
     [
         ("model_id", "scribe_v2_realtime"),
         ("audio_format", "pcm_16000"),
-        ("language_code", LANGUAGE),
+        ("language_code", "it"),
         ("commit_strategy", "manual"),
         *[("keyterms", term) for term in REALTIME_KEYTERMS],
     ]
@@ -78,16 +86,16 @@ class DailyAudioBudget:
     """Atomic local ledger for realtime audio sent per day.
 
     This is an explicit local cap on audio sent to the realtime STT websocket.
-    It is not an overall provider billing cap; the Lari Realtime caller
+    It is not an overall provider billing cap; the Desk Buddy realtime caller
     falls back locally rather than invoking paid batch transcription.
     """
 
     def __init__(self, path: str | Path | None = None,
                  daily_seconds: float | None = None):
         default_path = Path(__file__).resolve().parent / ".realtime_stt_usage.json"
-        self.path = Path(path or _setting("REALTIME_USAGE_FILE", default_path))
+        self.path = Path(path or os.environ.get("BUDDY_REALTIME_USAGE_FILE", default_path))
         self.daily_seconds = float(
-            _setting("REALTIME_DAILY_SECONDS", REALTIME_DAILY_SECONDS)
+            os.environ.get("BUDDY_REALTIME_DAILY_SECONDS", REALTIME_DAILY_SECONDS)
             if daily_seconds is None else daily_seconds
         )
         self._lock = threading.Lock()
@@ -228,7 +236,7 @@ class RealtimeScribe:
     async def connect(cls, on_partial=None, budget: DailyAudioBudget | None = None):
         key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
         if not key:
-            raise RealtimeUnavailable("ELEVENLABS_API_KEY is not set")
+            raise RealtimeUnavailable("ELEVENLABS_API_KEY non impostata")
         budget = budget or realtime_daily_budget()
         if budget.remaining() <= 0.0:
             raise RealtimeUnavailable("daily realtime audio cap reached")
@@ -392,9 +400,9 @@ def _post_multipart(url: str, headers: dict, data_tuples: list,
                     file_bytes: bytes, filename: str, mime: str,
                     timeout: float = 30.0) -> dict:
     import httpx
-    # httpx requires `data` to be a mapping; a list of tuples is treated as raw
-    # content and multipart encoding fails. Repeated fields such as keyterms are
-    # represented as lists and expanded into separate form fields.
+    # httpx richiede data come Mapping (una lista di tuple viene trattata come
+    # contenuto raw e l'encoding multipart esplode). I campi ripetuti
+    # (keyterms) diventano valori-lista che _iter_fields espande in campi omonimi.
     form: dict = {}
     for key, value in data_tuples:
         if key in form:
@@ -414,20 +422,20 @@ def _post_multipart(url: str, headers: dict, data_tuples: list,
 def transcribe(pcm: np.ndarray, backend: str) -> str:
     pcm = np.asarray(pcm, dtype=np.int16)
     if backend not in BACKENDS:
-        raise ValueError(f"unknown cloud STT backend: {backend}")
+        raise ValueError(f"backend STT cloud sconosciuto: {backend}")
     key_env = KEY_ENV[backend]
     key = os.environ.get(key_env, "").strip()
     if not key:
-        raise RuntimeError(f"{key_env} is not set; configure it in the process environment")
+        raise RuntimeError(f"{key_env} non impostata: aggiungila in desk-buddy/.env")
 
     if backend == "elevenlabs":
-        # Raw 16 kHz mono s16le PCM uses the lower-latency pcm_s16le_16 format.
+        # PCM nudo 16 kHz mono s16le: file_format=pcm_s16le_16 ha latenza minore.
         call = dict(
             url="https://api.elevenlabs.io/v1/speech-to-text",
             headers={"xi-api-key": key},
             data_tuples=(
                 [("model_id", "scribe_v2"),
-                 ("language_code", LANGUAGE),
+                 ("language_code", "it"),
                  ("file_format", "pcm_s16le_16")]
                 + [("keyterms", term) for term in KEYTERMS]
             ),
@@ -439,8 +447,8 @@ def transcribe(pcm: np.ndarray, backend: str) -> str:
         call = dict(
             url="https://api.groq.com/openai/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {key}"},
-            data_tuples=[("model", _setting("GROQ_MODEL", "whisper-large-v3")),
-                         ("language", LANGUAGE),
+            data_tuples=[("model", os.environ.get("BUDDY_GROQ_MODEL", "whisper-large-v3")),
+                         ("language", "it"),
                          ("prompt", STYLE_PROMPT),
                          ("response_format", "json")],
             file_bytes=_to_wav(pcm),
@@ -452,7 +460,7 @@ def transcribe(pcm: np.ndarray, backend: str) -> str:
             url="https://api.openai.com/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {key}"},
             data_tuples=[("model", "whisper-1"),
-                         ("language", LANGUAGE),
+                         ("language", "it"),
                          ("prompt", STYLE_PROMPT)],
             file_bytes=_to_wav(pcm),
             filename="audio.wav",
@@ -461,9 +469,9 @@ def transcribe(pcm: np.ndarray, backend: str) -> str:
 
     try:
         payload = _post_multipart(**call)
-    except Exception as exc:  # Network, quota or format failure; the caller selects the fallback
-        raise RuntimeError(f"STT {backend} failed: {exc}") from exc
+    except Exception as exc:  # rete, quota, formato: il chiamante decide il fallback
+        raise RuntimeError(f"STT {backend} fallito: {exc}") from exc
     text = (payload.get("text") or "").strip()
     if not text:
-        raise RuntimeError(f"STT backend {backend} returned empty text")
+        raise RuntimeError(f"STT {backend} ha restituito testo vuoto")
     return text

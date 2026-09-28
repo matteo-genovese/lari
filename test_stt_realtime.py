@@ -171,10 +171,8 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             await session.close()
 
         query = parse_qs(urlsplit(captured["url"]).query)
-        self.assertEqual(
-            query["keyterms"],
-            ["Ehi Lari"],
-        )
+        self.assertEqual(query["keyterms"], list(stt_backends.REALTIME_KEYTERMS))
+        self.assertGreater(len(query["keyterms"]), 1)
         self.assertTrue(all(len(term) <= 20 for term in query["keyterms"]))
         self.assertNotIn("secret-key", captured["url"])
 

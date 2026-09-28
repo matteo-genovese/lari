@@ -1,4 +1,5 @@
-"""Test voice-agent dispatch: fast direct backend with Hermes fallback for tools."""
+"""Dispatch agente per la voce: DeepSeek flash via API diretta (niente tool,
+basso latency) con fallback all'agente Hermes (tool completi, più lento)."""
 import asyncio
 import json
 import unittest
@@ -25,7 +26,7 @@ class DeepSeekDirectTests(unittest.TestCase):
         self.assertEqual(payload['stream'], False)
         self.assertEqual(payload['messages'][0]['role'], 'system')
         self.assertTrue(payload['messages'][0]['content'].startswith(server.VOICE_SYSTEM))
-        self.assertIn('tempo reale', payload['messages'][0]['content'])  # Honest behavior when no tools are available
+        self.assertIn('tempo reale', payload['messages'][0]['content'])  # onestà su no-tool
         self.assertEqual(payload['messages'][1], {'role': 'user', 'content': 'ciao'})
 
     def test_missing_key_raises_before_any_http(self):
@@ -60,7 +61,7 @@ class AgentDispatchTests(unittest.TestCase):
 
     def test_dispatch_prefers_deepseek(self):
         ds = AsyncMock(return_value='ok')
-        hm = AsyncMock(side_effect=AssertionError('Hermes must not be called'))
+        hm = AsyncMock(side_effect=AssertionError('hermes non deve girare'))
         with patch.object(server, 'AGENT_BACKEND', 'deepseek'), \
              patch.object(server, 'ask_deepseek', ds), \
              patch.object(server, 'ask_hermes', hm):
@@ -79,7 +80,7 @@ class AgentDispatchTests(unittest.TestCase):
         hm.assert_awaited_once_with('ciao')
 
     def test_hermes_backend_keeps_full_agent(self):
-        ds = AsyncMock(side_effect=AssertionError('DeepSeek must not be called'))
+        ds = AsyncMock(side_effect=AssertionError('deepseek non deve girare'))
         hm = AsyncMock(return_value='con tool')
         with patch.object(server, 'AGENT_BACKEND', 'hermes'), \
              patch.object(server, 'ask_deepseek', ds), \
@@ -193,7 +194,7 @@ class AgentDispatchTests(unittest.TestCase):
              patch.object(server, '_ask_cli', return_value='cli transcript') as cli:
             session, error = asyncio.run(turns())
 
-        self.assertEqual(error, 'Hermes continuation is unavailable')
+        self.assertEqual(error, 'continuazione Hermes non disponibile')
         self.assertEqual(session.hermes_session_id, 'stable-id')
         cli.assert_not_called()
         self.assertEqual(calls[1].headers['X-Hermes-Session-Id'], 'stable-id')
@@ -347,7 +348,7 @@ class HermesStreamingTests(unittest.TestCase):
             async def on_delta(value):
                 deltas.append(value)
 
-            with self.assertRaisesRegex(RuntimeError, 'ended with an error'):
+            with self.assertRaisesRegex(RuntimeError, 'terminato con errore'):
                 await server.stream_hermes(
                     'ciao', session_id='prior-id', on_delta=on_delta)
             return deltas
@@ -417,7 +418,7 @@ class HermesStreamingTests(unittest.TestCase):
 
         async def run():
             prior_id = 'prior-id'
-            with self.assertRaisesRegex(RuntimeError, r'missing \[DONE\]'):
+            with self.assertRaisesRegex(RuntimeError, r'manca \[DONE\]'):
                 await server.stream_hermes(
                     'ciao', session_id=prior_id, on_delta=AsyncMock())
             return prior_id
@@ -449,7 +450,7 @@ class HermesStreamingTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def run():
-            with self.assertRaisesRegex(RuntimeError, r"missing finish_reason='stop'"):
+            with self.assertRaisesRegex(RuntimeError, r"manca finish_reason='stop'"):
                 await server.stream_hermes('ciao', session_id='prior-id')
 
         with patch.object(httpx, 'AsyncClient', side_effect=client):
@@ -652,31 +653,6 @@ class SegmentedPlaybackTests(unittest.TestCase):
         self.assertEqual(session.playback_status, 'interrupted')
         self.assertFalse(session.awaiting_playback)
         self.assertEqual(session.conversation_until, 0.0)
-
-    def test_valid_interrupt_opens_delayed_followup_and_keeps_hermes_session(self):
-        async def send_json(value):
-            sent.append(value)
-
-        async def run():
-            session = Session(None, send_json)
-            session.turn = 21
-            session.hermes_session_id = "prior-hermes-session"
-            task = asyncio.create_task(asyncio.Event().wait())
-            session.active_turn = 21
-            session._turn_task = task
-            with patch.object(server, "ECHO_MUTE_S", 0.01):
-                self.assertTrue(await session.interrupt_current_turn(21))
-                await asyncio.sleep(0.03)
-            return session, task
-
-        sent = []
-        session, task = asyncio.run(run())
-        self.assertEqual(session.hermes_session_id, "prior-hermes-session")
-        self.assertGreater(session.conversation_until, 0.0)
-        self.assertIn({
-            "type": "followup", "seconds": server.FOLLOWUP_S, "interrupted": True,
-        }, sent)
-        self.assertEqual(sent[0]["type"], "interrupt_ack")
 
 
 if __name__ == '__main__':

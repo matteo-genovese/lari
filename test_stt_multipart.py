@@ -42,9 +42,9 @@ class MultipartEncodingTests(unittest.TestCase):
         self.assertEqual(text, 'trascrizione')
         self.assertIn('multipart/form-data', captured['content_type'])
         if backend == 'elevenlabs':
-            self.assertIn(PCM.tobytes(), captured['body'])   # Raw PCM payload
+            self.assertIn(PCM.tobytes(), captured['body'])   # PCM nudo nel corpo
         else:
-            self.assertIn(b'RIFF', captured['body'])          # WAV payload
+            self.assertIn(b'RIFF', captured['body'])          # WAV nel corpo
         return captured
 
     def test_elevenlabs_real_multipart_encoding(self):

@@ -1,57 +1,62 @@
+"""The UI brand must not silently change the known-working voice configuration."""
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+
+def inspect_config(extra):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("BUDDY_", "LARI_"))}
+    env.update(extra)
+    code = (
+        "import json, pathlib, server; "
+        "print(json.dumps({'wake': server.WAKE_PHRASE, "
+        "'backend': server.STT_BACKEND, "
+        "'vosk': server.VOSK_MODEL_DIR.name, "
+        "'root': str(server.HERMES_ROOT)}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=ROOT, env=env,
+        text=True, capture_output=True, check=True,
+    )
+    return json.loads(result.stdout.splitlines()[-1])
 
 
-class LocaleDefaultsTests(unittest.TestCase):
-    def test_english_locale_defaults_survive_blank_optional_environment_values(self):
-        with tempfile.TemporaryDirectory() as home:
-            env = os.environ.copy()
-            for key in list(env):
-                if key.startswith(("LARI_", "BUDDY_")):
-                    env.pop(key)
-            env.update({
-                "HOME": home,
-                "LARI_LANGUAGE": "en",
-                "LARI_WAKE_PHRASE": "",
-                "LARI_TTS_VOICE": "",
-                "LARI_STT_LANG": "",
-                "LARI_VOSK_MODEL_DIR": "",
-                "LARI_HERMES_ROOT": "",
-            })
-            script = (
-                "import json, pathlib, server; "
-                "print(json.dumps({"
-                "'language': server.LANGUAGE, "
-                "'wake': server.WAKE_PHRASE, "
-                "'voice': server.TTS_VOICE, "
-                "'stt_language': server.STT_LANG, "
-                "'vosk_model': server.VOSK_MODEL_DIR.name, "
-                "'hermes_root_is_default': server.HERMES_ROOT == pathlib.Path.home() / '.hermes' / 'hermes-agent'"
-                "}))"
+class WorkingVoiceConfigTests(unittest.TestCase):
+    def test_default_model_directory_and_hermes_root_are_portable(self):
+        config = inspect_config({})
+        self.assertEqual(config["vosk"], "vosk-model-small-it-0.22")
+        self.assertEqual(config["root"], str(Path.home() / ".hermes" / "hermes-agent"))
+
+    def test_hermes_root_can_be_selected_without_a_personal_home_path(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as custom_root:
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("BUDDY_", "LARI_"))}
+            env["BUDDY_HERMES_ROOT"] = custom_root
+            code = (
+                "import sys,types; sys.modules['tools']=types.ModuleType('tools'); "
+                "m=types.ModuleType('tools.wake_word'); m._build_engine=None; "
+                "sys.modules['tools.wake_word']=m; import server; print(server.HERMES_ROOT)"
             )
             result = subprocess.run(
-                [sys.executable, "-c", script],
-                cwd=PROJECT_ROOT,
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
+                [sys.executable, "-c", code], cwd=ROOT, env=env,
+                text=True, capture_output=True, check=True,
             )
-            config = json.loads(result.stdout.splitlines()[-1])
-        self.assertEqual(config["language"], "en")
-        self.assertEqual(config["wake"], "Hey Lari")
-        self.assertEqual(config["voice"], "en-US-JennyNeural")
-        self.assertEqual(config["stt_language"], "en")
-        self.assertEqual(config["vosk_model"], "vosk-model-small-en")
-        self.assertTrue(config["hermes_root_is_default"])
+            self.assertEqual(result.stdout.strip(), custom_root)
+
+    def test_legacy_voice_settings_are_not_replaced_by_brand_settings(self):
+        config = inspect_config({
+            "BUDDY_WAKE_PHRASE": "hey nic",
+            "BUDDY_STT_BACKEND": "elevenlabs_realtime",
+            "LARI_WAKE_PHRASE": "not-a-runtime-setting",
+            "LARI_STT_BACKEND": "whisper",
+        })
+        self.assertEqual(config["wake"], "hey nic")
+        self.assertEqual(config["backend"], "elevenlabs_realtime")
 
 
 if __name__ == "__main__":

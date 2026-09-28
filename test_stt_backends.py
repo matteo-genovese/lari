@@ -25,9 +25,9 @@ class ElevenLabsTests(unittest.TestCase):
     def test_posts_scribe_v2_with_raw_pcm_keyterms_and_parses_text(self):
         fake_post.captured = None
         with patch.dict(os.environ, {'ELEVENLABS_API_KEY': 'k-el'}), \
-             patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Ehi Lari, che tempo fa a Roma?'})):
+             patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Ehi Nic, che tempo fa a Roma?'})):
             text = stt_backends.transcribe(PCM, 'elevenlabs')
-        self.assertEqual(text, 'Ehi Lari, che tempo fa a Roma?')
+        self.assertEqual(text, 'Ehi Nic, che tempo fa a Roma?')
         call = fake_post.captured
         self.assertEqual(call['url'], 'https://api.elevenlabs.io/v1/speech-to-text')
         self.assertEqual(call['headers'].get('xi-api-key'), 'k-el')
@@ -36,8 +36,9 @@ class ElevenLabsTests(unittest.TestCase):
         self.assertEqual(data['file_format'], 'pcm_s16le_16')
         self.assertEqual(data['language_code'], 'it')
         keyterms = [v for k, v in call['data_tuples'] if k == 'keyterms']
-        self.assertEqual(keyterms, ["Ehi Lari"])
-        self.assertEqual(call['file_bytes'], PCM.tobytes())  # Raw PCM, not WAV
+        self.assertIn('Hey Nic', keyterms)
+        self.assertIn('centro commerciale Aura', keyterms)
+        self.assertEqual(call['file_bytes'], PCM.tobytes())  # PCM nudo, non WAV
 
 
 class GroqTests(unittest.TestCase):
@@ -53,8 +54,8 @@ class GroqTests(unittest.TestCase):
         data = dict(call['data_tuples'])
         self.assertEqual(data['model'], 'whisper-large-v3')
         self.assertEqual(data['language'], 'it')
-        self.assertIn("Ehi Lari", data["prompt"])
-        self.assertEqual(call['file_bytes'][:4], b'RIFF')  # WAV payload for Groq
+        self.assertIn('Hey Nic', data['prompt'])
+        self.assertEqual(call['file_bytes'][:4], b'RIFF')  # WAV per Groq
 
 
 class OpenAITests(unittest.TestCase):
@@ -98,46 +99,45 @@ class ServerRoutingTests(unittest.TestCase):
     def test_cloud_decode_keeps_wake_gate_and_followup(self):
         import server
         with patch.object(server.stt_backends, 'transcribe',
-                          return_value='Ehi Lari, che tempo fa a Roma?') as mocked:
+                          return_value='Ehi Nic, che tempo fa a Roma?') as mocked:
             cmd = server.decode_utterance(PCM, followup=False, backend='groq')
             self.assertEqual(cmd, 'che tempo fa a Roma?')
             follow = server.decode_utterance(PCM, followup=True, backend='groq')
-            # Strip a residual wake phrase from follow-up turns as on the Whisper path.
-            # The follow-up behavior is tested with text that has no wake phrase.
+            # Il residuo di wake viene tolto anche nel follow-up: stessa
+            # semantica del percorso whisper. La differenza del follow-up si
+            # vede sul testo SENZA wake (test_cloud_decode_rejects_speech_without_wake).
             self.assertEqual(follow, 'che tempo fa a Roma?')
         self.assertEqual(mocked.call_args.args[1], 'groq')
 
     def test_cloud_decode_rejects_speech_without_wake(self):
         import server
         with patch.object(server.stt_backends, 'transcribe',
-                          return_value='I spoke with a colleague about work.'):
+                          return_value='Ho parlato con Nic di lavoro.'):
             self.assertIsNone(server.decode_utterance(PCM, followup=False, backend='openai'))
             self.assertEqual(server.decode_utterance(PCM, followup=True, backend='openai'),
-                             'I spoke with a colleague about work.')
+                             'Ho parlato con Nic di lavoro.')
 
 
 class RuntimeDispatchTests(unittest.TestCase):
     def test_configured_cloud_backend_is_the_one_called(self):
-        """Runtime dispatch must use the configured cloud backend, not local Whisper.
-
-        The _on_wake wiring was broken even though decode_utterance was correct.
-        """
+        """Il routing runtime deve usare il backend cloud di .env, non Whisper
+        locale: il wiring in _on_wake era rotto anche con decode_utterance giusto."""
         import server
         with patch.object(server, 'STT_BACKEND', 'groq'), \
              patch.object(server.stt_backends, 'transcribe',
-                          return_value='Ehi Lari, che tempo fa?') as cloud, \
+                          return_value='Ehi Nic, che tempo fa?') as cloud, \
              patch.object(server, 'transcribe',
-                          side_effect=AssertionError('local Whisper must not run')) as local:
+                          side_effect=AssertionError('whisper locale non deve girare')) as local:
             text = server.stt_transcribe(PCM)
-        self.assertEqual(text, 'Ehi Lari, che tempo fa?')
+        self.assertEqual(text, 'Ehi Nic, che tempo fa?')
         self.assertEqual(cloud.call_args.args[1], 'groq')
         local.assert_not_called()
 
     def test_whisper_local_is_the_fallback(self):
         import server
         with patch.object(server, 'STT_BACKEND', 'whisper'), \
-             patch.object(server, 'transcribe', return_value='Ehi Lari.') as local:
-            self.assertEqual(server.stt_transcribe(PCM), 'Ehi Lari.')
+             patch.object(server, 'transcribe', return_value='Ehi Nic.') as local:
+            self.assertEqual(server.stt_transcribe(PCM), 'Ehi Nic.')
         local.assert_called_once()
 
 

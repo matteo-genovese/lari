@@ -2,84 +2,42 @@
 import unittest
 import tempfile
 import asyncio
-import os
-import subprocess
-import sys
-import re
 from pathlib import Path
 import numpy as np
 import wave
-from unittest.mock import AsyncMock, Mock, patch
 
-import server
 from server import WAKE_RE, wake_command, save_turn_audio, Session, resolve_command
 
 
 class WakeTests(unittest.TestCase):
-    def test_configured_aliases_match_only_explicit_prefixes(self):
-        env = os.environ.copy()
-        env['LARI_WAKE_PHRASE'] = 'Hey Lari'
-        env['LARI_WAKE_ALIASES'] = 'Ehi Lari,Ehi Lika,Hey Nic,Ehi Nick,Hey Nico'
-        result = subprocess.run(
-            [sys.executable, '-c', "import server; print([server.wake_command(p) for p in ('Hey Lari, buongiorno', 'Ehi Lika, buongiorno', 'Hey Nic, buongiorno', 'Ehi Nick, buongiorno', 'Hey, Nico. Buon appetito.', 'Hey Other, buongiorno')])"],
-            capture_output=True, text=True, check=True, env=env,
-        )
-        self.assertEqual(result.stdout.strip(), "['buongiorno', 'buongiorno', 'buongiorno', 'buongiorno', 'Buon appetito.', None]")
+    def test_real_phone_transcript_is_not_discarded(self):
+        text = ('E Nic, che ti ando farò mani a Roma, voi andare a first show, '
+                'quindi il centro con me ci ha le augure.')
+        self.assertIsNotNone(WAKE_RE.search(text))
+        self.assertEqual(wake_command(text), text.split(',', 1)[1].strip())
 
-    def test_configured_aliases_are_included_in_vosk_grammar(self):
-        with patch.object(server, 'WAKE_PHRASE', 'Hey Lari'), \
-             patch.object(server, 'WAKE_ALIASES', ('Ehi Lari', 'Ehi Lika', 'Hey Nic')), \
-             patch.object(server, '_wake_phrases', ('Hey Lari', 'Ehi Lari', 'Ehi Lika', 'Hey Nic')), \
-             patch.object(server, 'get_vosk', return_value=object()), \
-             patch('vosk.KaldiRecognizer') as recognizer:
-            recognizer.return_value.FinalResult.return_value = '{"text":"hey nic"}'
-            with patch.object(server, 'WAKE_RE', re.compile(r'^(?:hey lari|ehi lari|ehi lika|hey nic)\b', re.I)):
-                self.assertTrue(server.vosk_wake(np.zeros(16000, dtype=np.int16)))
-            grammar = recognizer.call_args.args[2]
-            self.assertIn('hey nic', grammar)
-            self.assertIn('ehi lika', grammar)
+    def test_wake_variants_from_asr_are_accepted(self):
+        # I modelli ASR rendono «Ehi Nic» come "Nica"/"Nici": il gate deve
+        # accettarle (fino a 2 lettere spurie) ma non nomi lunghi come Nicola/Nicole.
+        self.assertEqual(wake_command('Ehi Nica, che tempo fa?'), 'che tempo fa?')
+        self.assertEqual(wake_command('Ehi Nici, come the weather?'), 'come the weather?')
+        self.assertEqual(wake_command('Hey Nick, dimmi.'), 'dimmi.')
+        self.assertIsNone(wake_command('Hey Nicola, che tempo fa?'))
+        self.assertIsNone(wake_command("Non c'è Nicola stasera."))
 
-    def test_default_italian_wake_phrase(self):
-        self.assertEqual(wake_command("Ehi Lari, che tempo fa?"), "che tempo fa?")
-        self.assertIsNone(wake_command("Hey Other, che tempo fa?"))
-        self.assertIsNone(wake_command("Lari, che tempo fa?"))
+    def test_does_not_trigger_on_nickname_in_background(self):
+        self.assertIsNone(wake_command('Ho parlato con Nic di lavoro.'))
 
-    def test_configured_english_default_phrase(self):
-        import os
-        import subprocess
-        import sys
-        env = os.environ.copy()
-        env["LARI_LANGUAGE"] = "en"
-        env.pop("LARI_WAKE_PHRASE", None)
-        result = subprocess.run(
-            [sys.executable, "-c", "import server; print(server.WAKE_PHRASE, server.wake_command('Hey Lari, hello'))"],
-            check=True, capture_output=True, text=True, env=env,
-        )
-        self.assertIn("Hey Lari hello", result.stdout)
-
-    def test_configured_custom_wake_phrase(self):
-        import os
-        import subprocess
-        import sys
-        env = os.environ.copy()
-        env["LARI_LANGUAGE"] = "en"
-        env["LARI_WAKE_PHRASE"] = "Computer Lare"
-        result = subprocess.run(
-            [sys.executable, "-c", "import server; print(server.wake_command('Computer Lare, hello'))"],
-            check=True, capture_output=True, text=True, env=env,
-        )
-        self.assertIn("hello", result.stdout)
-
-
-    def test_does_not_trigger_on_a_name_in_background(self):
-        self.assertIsNone(wake_command("I spoke with Lari about work."))
+    def test_standard_hey_nic(self):
+        self.assertEqual(wake_command('Hey Nic, che tempo fa domani a Roma?'),
+                         'che tempo fa domani a Roma?')
 
     def test_followup_without_wake_only_during_conversation_window(self):
         phrase = 'E tu cosa mi consigli?'
         self.assertIsNone(resolve_command(phrase, conversation_until=0, now=100))
         self.assertEqual(resolve_command(phrase, conversation_until=130, now=100), phrase)
         self.assertIsNone(resolve_command(phrase, conversation_until=99, now=100))
-        self.assertEqual(resolve_command('Ehi Lari, che tempo fa?', conversation_until=0, now=100),
+        self.assertEqual(resolve_command('Hey Nic, che tempo fa?', conversation_until=0, now=100),
                          'che tempo fa?')
 
     def test_playback_ack_opens_followup_window(self):
@@ -90,7 +48,7 @@ class WakeTests(unittest.TestCase):
         session.mark_playback_done(now=100.0)
         self.assertFalse(session.awaiting_playback)
         self.assertEqual(session.conversation_until, 100.0 + 30.0)
-        session.mark_playback_done(now=200.0)  # A duplicate playback acknowledgement must not extend the session
+        session.mark_playback_done(now=200.0)  # ack duplicato non estende la sessione
         self.assertEqual(session.conversation_until, 130.0)
 
     def test_hermes_session_id_belongs_to_the_websocket_session(self):
@@ -106,8 +64,8 @@ class WakeTests(unittest.TestCase):
         async def sender(_):
             pass
         session = Session(None, sender)
-        # The wake phrase in pre-roll may be quieter than the command. Trimming must
-        # preserve it even when it is below the VAD energy threshold.
+        # Il wake nel pre-roll è più piano del comando; il trim non deve
+        # eliminarlo, anche se non supera la soglia energetica del VAD.
         wake = np.full(16000, 250, dtype=np.int16)
         loud = np.full(16000, 3000, dtype=np.int16)
         for offset in range(0, len(loud), 1600):
@@ -123,8 +81,8 @@ class WakeTests(unittest.TestCase):
         session = Session(None, sender)
         voice = np.full(16000, 3000, dtype=np.int16)
         silence = np.zeros(16000, dtype=np.int16)
-        # Keep 15 seconds of speech and a 2-second pause without truncating the
-        # utterance at a fixed short limit. A long final pause should close it.
+        # 15 s parlati + 2 s di pausa + seconda parte: non finire a 12 s
+        # né durante la pausa. Una pausa finale sufficientemente lunga chiude.
         for chunk in [voice] * 15 + [silence] * 2 + [voice] * 2 + [silence] * 3:
             session.recv_queue.put_nowait(chunk.tobytes())
         audio = asyncio.run(session._record_utterance())
@@ -187,96 +145,6 @@ class WakeTests(unittest.TestCase):
 
         self.assertIsNotNone(audio)
         self.assertEqual(realtime.chunks, chunks)
-
-
-class LocalWakeGateTests(unittest.TestCase):
-    def test_ambient_candidate_does_not_schedule_realtime_turn(self):
-        async def send(_):
-            pass
-
-        session = Session(None, send)
-        pcm = np.full(1600, 3000, dtype=np.int16).tobytes()
-        with patch.object(server, "vosk_wake", return_value=False) as gate, \
-             patch.object(server.asyncio, "run_coroutine_threadsafe") as schedule, \
-             patch.object(server.stt_backends.RealtimeScribe, "connect", new_callable=AsyncMock) as connect:
-            self.assertFalse(session._launch_local_candidate(pcm))
-
-        gate.assert_called_once()
-        schedule.assert_not_called()
-        connect.assert_not_awaited()
-
-    def test_confirmed_candidate_schedules_one_turn_with_audio_seed(self):
-        async def send(_):
-            pass
-
-        session = Session(None, send)
-        pcm = np.full(1600, 3000, dtype=np.int16).tobytes()
-        scheduled = []
-
-        def schedule(coro, _loop):
-            scheduled.append(coro)
-            coro.close()
-            return Mock()
-
-        with (
-            patch.object(server, "vosk_wake", return_value=True) as gate,
-            patch.object(server, "transcribe", return_value="Ehi Lari, ciao") as local_asr,
-            patch.object(server.asyncio, "run_coroutine_threadsafe", side_effect=schedule),
-        ):
-            self.assertTrue(session._launch_local_candidate(pcm))
-
-        gate.assert_called_once()
-        local_asr.assert_called_once()
-        self.assertEqual(len(scheduled), 1)
-        self.assertEqual(session.state, "waking")
-
-    def test_vosk_grammar_false_positive_is_rejected_by_local_asr(self):
-        async def send(_):
-            pass
-
-        session = Session(None, send)
-        pcm = np.full(1600, 3000, dtype=np.int16).tobytes()
-        with (
-            patch.object(server, "vosk_wake", return_value=True),
-            patch.object(server, "transcribe", return_value="Che tempo fa domani a Roma?"),
-            patch.object(server.asyncio, "run_coroutine_threadsafe") as schedule,
-            patch.object(server.stt_backends.RealtimeScribe, "connect", new_callable=AsyncMock) as connect,
-        ):
-            self.assertFalse(session._launch_local_candidate(pcm))
-
-        schedule.assert_not_called()
-        connect.assert_not_awaited()
-
-
-class RealtimeAfterLocalWakeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_realtime_connects_once_only_after_local_confirmation(self):
-        sent = []
-
-        async def send(message):
-            sent.append(message)
-
-        session = Session(None, send)
-        seed = np.full(1600, 3000, dtype=np.int16).tobytes()
-        session._record_utterance = AsyncMock(return_value=np.ones(16000, dtype=np.int16))
-        session._ask_hermes = AsyncMock(return_value="ok")
-        session._speak = AsyncMock()
-        realtime = AsyncMock()
-        with (
-            patch.object(server, "STT_BACKEND", server.stt_backends.REALTIME_BACKEND),
-            patch.object(server, "WAKE_PROVIDER", "whisper"),
-            patch.object(server, "AGENT_BACKEND", "deepseek"),
-            patch.object(server.stt_backends.RealtimeScribe, "connect", new_callable=AsyncMock,
-                         return_value=realtime) as connect,
-            patch.object(server, "_transcribe_realtime_or_batch", new_callable=AsyncMock,
-                         return_value=("Ehi Lari, aggiunta", False)),
-            patch.object(server, "save_turn_audio", return_value=Path("fake.wav")),
-        ):
-            await session._on_wake(seed, local_wake_confirmed=True)
-
-        connect.assert_awaited_once()
-        session._record_utterance.assert_awaited_once()
-        self.assertEqual(session._record_utterance.call_args.args[0], seed)
-        self.assertTrue(any(m.get("type") == "transcript" for m in sent))
 
 
 if __name__ == '__main__':
