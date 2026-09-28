@@ -66,6 +66,10 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 
 See `.env.example` for a minimal, nonsecret template. The UI brand is independent of the voice identity. Avoid putting installation-specific private URLs, recordings or downloaded models into repository files.
 
+## Install & usage
+
+Add the page to your home screen (PWA): the manifest and service worker make it open fullscreen and keep the shell available offline, so a closed connection shows as disconnected instead of a blank tab. The monthly usage report is served at `/<token>/usage` (turns, paid realtime seconds, local turns) and summarized in the UI; set `BUDDY_USAGE_EUR_PER_MIN` in your private environment to attach a cost estimate from your own provider rate — no price is ever hardcoded.
+
 ## Privacy, costs and testing
 
 - Wake confirmation uses Vosk plus local faster-whisper. ElevenLabs Realtime opens **only after** the local gate. If Realtime is unavailable or reaches its local usage limit, transcription falls back to local STT rather than paid batch. Local models consume CPU; ElevenLabs incurs provider usage when selected. The Vosk gate is a deliberately loose candidate detector: its constrained grammar maps near-miss speech onto the wake phrase, so strict rejection happens when the command is extracted from the transcript.

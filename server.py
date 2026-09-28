@@ -48,6 +48,9 @@ HERMES_MODEL = os.environ.get("BUDDY_HERMES_MODEL", "deepseek-flash")
 # veri, molto più lento: 18k token di system prompt per ogni battuta).
 AGENT_BACKEND = os.environ.get("BUDDY_AGENT_BACKEND", "deepseek").strip()
 
+import usage  # noqa: E402  (modulo del progetto)
+USAGE_LEDGER = usage.UsageLedger()
+
 def _deepseek_from_hermes_env() -> tuple[str, str]:
     """Key/base URL DeepSeek anche da ~/.hermes/.env (il systemd unit del buddy
     carica solo desk-buddy/.env, la key vive nella config di Hermes)."""
@@ -1225,6 +1228,7 @@ class Session:
         current_task = asyncio.current_task()
         self.turn += 1
         turn = self.turn
+        self._turn_paid_s = 0.0
         self.active_turn = turn
         self._turn_task = current_task
 
@@ -1389,6 +1393,7 @@ class Session:
                     await self.set_state("listening", turn=turn)
             else:
                 await self.set_state("listening", turn=turn)
+            self._record_usage()
             log.info("turno %d completato in %.1fs", turn, time.time() - t_turn)
             return
 
@@ -1438,6 +1443,22 @@ class Session:
             await self.ws.send_bytes(audio)
             self.last_tts = time.time()
 
+    def _record_usage(self) -> None:
+        """Best-effort accounting for the monthly usage report."""
+        import datetime
+        try:
+            paid = float(getattr(self, "_turn_paid_s", 0.0) or 0.0)
+            USAGE_LEDGER.record(
+                datetime.date.today().isoformat(),
+                turns=1,
+                realtime_s=paid,
+                local_turns=0 if paid else 1,
+            )
+        except Exception:
+            log.exception("impossibile registrare l'usage")
+        finally:
+            self._turn_paid_s = 0.0
+
     async def _record_utterance(self, prelude: bytes = b"", realtime=None):
         """VAD: raccoglie PCM finché c'è parlato, poi chiude dopo SILENCE_END_S di silenzio.
 
@@ -1458,6 +1479,8 @@ class Session:
             nonlocal reported_stt_mode
             assert realtime is not None
             sent = await realtime.send_audio(chunk)
+            if sent:
+                self._turn_paid_s = getattr(self, "_turn_paid_s", 0.0) + len(chunk) / (SAMPLE_RATE * 2)
             mode = "realtime" if sent else "local"
             if mode != reported_stt_mode:
                 reported_stt_mode = mode
@@ -1613,6 +1636,7 @@ async def mascot_asset(token: str, asset_name: str):
         "lare-concept.svg", "lare-idle.svg", "lare-listening.svg",
         "lare-thinking.svg", "lare-speaking.svg", "lare-error.svg",
         "logo.jpg", "favicon.ico", "apple-touch-icon.png", "og.png",
+        "icon-192.png", "icon-512.png",
     }:
         return Response(content="Not found", status_code=404)
     path = BASE_DIR / "static" / "assets" / asset_name
@@ -1623,6 +1647,48 @@ async def mascot_asset(token: str, asset_name: str):
         ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     }[path.suffix]
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/{token}/manifest.webmanifest")
+async def pwa_manifest(token: str):
+    """Install manifest scoped to this installation's URL space."""
+    if not TOKEN or token != TOKEN:
+        return Response(content="Forbidden", status_code=403)
+    icons = "/%s/assets" % token
+    payload = {
+        "name": "Lari \u2014 Lare",
+        "short_name": "Lari",
+        "start_url": "/%s/" % token,
+        "scope": "/%s/" % token,
+        "display": "fullscreen",
+        "background_color": "#010000",
+        "theme_color": "#010000",
+        "icons": [
+            {"src": "%s/icon-192.png" % icons, "sizes": "192x192", "type": "image/png"},
+            {"src": "%s/icon-512.png" % icons, "sizes": "512x512", "type": "image/png"},
+        ],
+    }
+    return Response(content=json.dumps(payload), media_type="application/manifest+json")
+
+
+@app.get("/{token}/sw.js")
+async def pwa_service_worker(token: str):
+    """Service worker (scope: the app's own URL space)."""
+    if not TOKEN or token != TOKEN:
+        return Response(content="Forbidden", status_code=403)
+    return FileResponse(BASE_DIR / "static" / "sw.js",
+                        media_type="application/javascript")
+
+
+@app.get("/{token}/usage")
+async def usage_summary(token: str):
+    """Monthly usage summary: turns, paid realtime seconds, local turns."""
+    if not TOKEN or token != TOKEN:
+        return Response(content="Forbidden", status_code=403)
+    rate_env = os.environ.get("BUDDY_USAGE_EUR_PER_MIN", "").strip()
+    rate = float(rate_env) if rate_env else None
+    summary = USAGE_LEDGER.month_summary(time.strftime("%Y-%m"), eur_per_min=rate)
+    return Response(content=json.dumps(summary), media_type="application/json")
 
 
 @app.websocket("/{token}/ws")

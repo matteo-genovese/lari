@@ -6,6 +6,8 @@
 <meta name="theme-color" content="#010000">
 <link rel="icon" href="assets/favicon.ico" sizes="48x48">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
 <title>Lari — Lare</title>
 <style>
   :root{
@@ -48,6 +50,7 @@
   .usage.local{color:var(--accent); border-color:#265a48}
   .usage.followup,.usage.pending{color:var(--warn); border-color:#635030}
   .usage.paid{color:#fff; border-color:var(--err); background:#4b2026}
+  .month{width:100%; max-width:min(100%,360px); margin-top:6px; color:var(--dim); font-size:10px; letter-spacing:.06em; text-align:center}
 
   .log{width:100%; max-width:520px; max-height:34vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px 12px}
   .log:empty::before{content:"Nessuna conversazione."; color:var(--dim); font-size:13px}
@@ -87,6 +90,7 @@
     <button id="stopBtn" class="ghost hidden">Ferma</button>
     <button id="interruptBtn" class="ghost hidden">Interrompi risposta</button>
     <div class="hint" id="hint">Avvia l'ascolto per caricare la frase configurata.</div>
+    <div class="month" id="monthUsage"></div>
   </div>
 
 <script>
@@ -654,6 +658,19 @@
   setInterval(renderUsage, 1000);
   document.addEventListener("click", () => { if (ctx && ctx.state === "suspended") ctx.resume(); }, {once:false});
 })();
+</script>
+<script>
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  async function refreshUsage(){
+    try {
+      const r = await fetch("usage"); if (!r.ok) return;
+      const u = await r.json();
+      const el = document.getElementById("monthUsage"); if (!el) return;
+      el.textContent = "Mese " + u.month + ": " + u.turns + " turni \u00b7 " + u.realtime_min + " min audio a pagamento"
+        + (u.est_eur != null ? " \u00b7 ~\u20ac" + u.est_eur : "");
+    } catch(e){}
+  }
+  refreshUsage(); setInterval(refreshUsage, 60000);
 </script>
 </body>
 </html>
