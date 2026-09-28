@@ -1507,16 +1507,20 @@ class Session:
                 await forward_audio(chunk)
             rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
             threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
-            # il floor deve continuare ad adattarsi anche durante la registrazione,
-            # altrimenti in un ambiente rumoroso la soglia resta bassa per sempre
-            if rms < threshold:
-                self.noise_floor = 0.98 * self.noise_floor + 0.02 * max(rms, 1.0)
-                self.last_silent = time.time()
-            elif time.time() - self.last_silent > 3.0:
-                self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
-                self.last_silent = time.time()
-                threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
-                log.info("VAD: floor adattato al rumore ambiente -> soglia %.0f", threshold)
+            # Il floor si adatta SOLO prima del primo parlato: durante
+            # un'utterance le sillabe pianissime verrebbero imparate come rumore
+            # ambiente, la soglia salirebbe oltre i picchi del parlante e il
+            # registratore resterebbe appeso (fallimento reale: 22s raccolti,
+            # frase detta due volte nella trascrizione).
+            if not started:
+                if rms < threshold:
+                    self.noise_floor = 0.98 * self.noise_floor + 0.02 * max(rms, 1.0)
+                    self.last_silent = time.time()
+                elif time.time() - self.last_silent > 3.0:
+                    self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
+                    self.last_silent = time.time()
+                    threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
+                    log.info("VAD: floor adattato al rumore ambiente -> soglia %.0f", threshold)
             if rms >= threshold:
                 if not started:
                     log.info("VAD: parlato rilevato (rms=%.0f soglia=%.0f)", rms, threshold)
@@ -1525,14 +1529,19 @@ class Session:
                 voiced_s += dt
             elif started:
                 idle_s += dt
-                if idle_s >= SILENCE_END_S and voiced_s >= MIN_SPEECH_S:
+                # Chiudi comunque dopo il doppio del silenzio atteso: il wake o il
+                # follow-up hanno già confermato l'intento parlato, il quorum
+                # voiced non deve poter appendere il registratore.
+                if idle_s >= SILENCE_END_S and (
+                        voiced_s >= MIN_SPEECH_S or idle_s >= SILENCE_END_S + 2.0):
                     break
             else:
                 idle_s += dt
                 if idle_s >= IDLE_ABORT_S:
                     log.info("VAD: abort, nessun parlato entro %.1fs", IDLE_ABORT_S)
                     return None
-            if idle_s >= SILENCE_END_S and voiced_s >= MIN_SPEECH_S:
+            if idle_s >= SILENCE_END_S and (
+                    voiced_s >= MIN_SPEECH_S or idle_s >= SILENCE_END_S + 2.0):
                 break
         pcm = np.frombuffer(bytes(collected), dtype=np.int16)
         log.info("VAD: raccolti %.2fs (parlato %.2fs, started=%s)", len(pcm) / SAMPLE_RATE, voiced_s, started)
