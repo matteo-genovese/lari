@@ -38,8 +38,8 @@ Edit `.env` before starting the bridge:
 
 - Set `LARI_TOKEN` to a long random access token. Generate one with `python -c 'import secrets; print(secrets.token_urlsafe(32))'`, then copy the result into `.env`. The bridge refuses requests when the value is empty.
 - Set `LARI_LANGUAGE` to `it` or `en`.
-- Optionally set `LARI_WAKE_PHRASE`; if omitted, the language default is used.
-- Point `LARI_VOSK_MODEL_DIR` at a Vosk model matching the selected language. Models are downloaded separately and are not committed.
+- Optionally set `LARI_WAKE_PHRASE`; if omitted, the language default is used. If your local ASR consistently spells the spoken phrase differently, set `LARI_WAKE_ALIASES` to comma-separated, installation-specific variants; these are validated by the local wake gate before any realtime STT call.
+- Point `LARI_VOSK_MODEL_DIR` at an existing Vosk model matching the selected language; verify that its `am/final.mdl` exists. The wake worker cannot function with an invalid path. Models are downloaded separately and are not committed.
 - Configure the Hermes API URL and key if required by your Hermes deployment.
 
 Load the environment and start the server:
@@ -64,6 +64,7 @@ All settings use the `LARI_` prefix. The bridge still accepts legacy `BUDDY_` na
 | `LARI_TOKEN` | unset | Required bearer-like URL token; generate a unique random value |
 | `LARI_LANGUAGE` | `it` | UI, speech recognition, TTS and wake defaults: `it` or `en` |
 | `LARI_WAKE_PHRASE` | `Ehi Lari` / `Hey Lari` | Optional setup-time override; otherwise derived from the language |
+| `LARI_WAKE_ALIASES` | unset | Optional comma-separated local ASR variants for this installation; strict prefix match |
 | `LARI_PORT` | `8643` | HTTP/WebSocket listener port |
 | `LARI_HERMES_API` | `http://127.0.0.1:8642` | Hermes API server base URL |
 | `LARI_HERMES_ROOT` | `~/.hermes/hermes-agent` | Path to the Hermes source tree used by the wake engine |

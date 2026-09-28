@@ -2,6 +2,10 @@
 import unittest
 import tempfile
 import asyncio
+import os
+import subprocess
+import sys
+import re
 from pathlib import Path
 import numpy as np
 import wave
@@ -12,6 +16,29 @@ from server import WAKE_RE, wake_command, save_turn_audio, Session, resolve_comm
 
 
 class WakeTests(unittest.TestCase):
+    def test_configured_aliases_match_only_explicit_prefixes(self):
+        env = os.environ.copy()
+        env['LARI_WAKE_PHRASE'] = 'Hey Lari'
+        env['LARI_WAKE_ALIASES'] = 'Ehi Lari,Ehi Lika,Hey Nic,Ehi Nick,Hey Nico'
+        result = subprocess.run(
+            [sys.executable, '-c', "import server; print([server.wake_command(p) for p in ('Hey Lari, buongiorno', 'Ehi Lika, buongiorno', 'Hey Nic, buongiorno', 'Ehi Nick, buongiorno', 'Hey, Nico. Buon appetito.', 'Hey Other, buongiorno')])"],
+            capture_output=True, text=True, check=True, env=env,
+        )
+        self.assertEqual(result.stdout.strip(), "['buongiorno', 'buongiorno', 'buongiorno', 'buongiorno', 'Buon appetito.', None]")
+
+    def test_configured_aliases_are_included_in_vosk_grammar(self):
+        with patch.object(server, 'WAKE_PHRASE', 'Hey Lari'), \
+             patch.object(server, 'WAKE_ALIASES', ('Ehi Lari', 'Ehi Lika', 'Hey Nic')), \
+             patch.object(server, '_wake_phrases', ('Hey Lari', 'Ehi Lari', 'Ehi Lika', 'Hey Nic')), \
+             patch.object(server, 'get_vosk', return_value=object()), \
+             patch('vosk.KaldiRecognizer') as recognizer:
+            recognizer.return_value.FinalResult.return_value = '{"text":"hey nic"}'
+            with patch.object(server, 'WAKE_RE', re.compile(r'^(?:hey lari|ehi lari|ehi lika|hey nic)\b', re.I)):
+                self.assertTrue(server.vosk_wake(np.zeros(16000, dtype=np.int16)))
+            grammar = recognizer.call_args.args[2]
+            self.assertIn('hey nic', grammar)
+            self.assertIn('ehi lika', grammar)
+
     def test_default_italian_wake_phrase(self):
         self.assertEqual(wake_command("Ehi Lari, che tempo fa?"), "che tempo fa?")
         self.assertIsNone(wake_command("Hey Other, che tempo fa?"))

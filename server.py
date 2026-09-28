@@ -147,11 +147,16 @@ def localized(en: str, it: str) -> str:
 
 _default_wake_phrase = "Ehi Lari" if LANGUAGE == "it" else "Hey Lari"
 WAKE_PHRASE = str(setting("WAKE_PHRASE", _default_wake_phrase)).strip() or _default_wake_phrase
-_wake_words = WAKE_PHRASE.split()
-if not _wake_words:
+# Additional pronunciations and ASR spellings are installation settings, not brand defaults.
+WAKE_ALIASES = tuple(part.strip() for part in str(setting("WAKE_ALIASES", "")).split(",") if part.strip())
+_wake_phrases = (WAKE_PHRASE, *WAKE_ALIASES)
+if not WAKE_PHRASE.split():
     raise ValueError("LARI_WAKE_PHRASE must contain at least one word")
 WAKE_RE = re.compile(
-    r"^\s*" + r"[\s,.!?:;-]+".join(map(re.escape, _wake_words)) + r"\b",
+    r"^\s*(?:" + "|".join(
+        r"[\s,.!?:;-]+".join(map(re.escape, phrase.split())) + r"\b"
+        for phrase in sorted(_wake_phrases, key=len, reverse=True)
+    ) + r")",
     re.IGNORECASE,
 )
 _default_voice_system = (
@@ -257,7 +262,10 @@ def get_vosk():
 def vosk_wake(pcm: np.ndarray) -> bool:
     """Check the wake phrase in the first 2.5 seconds without constraining free-form transcription."""
     from vosk import KaldiRecognizer
-    rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE, json.dumps([WAKE_PHRASE.casefold(), "[unk]"]))
+    rec = KaldiRecognizer(
+        get_vosk(), SAMPLE_RATE,
+        json.dumps([*(phrase.casefold() for phrase in _wake_phrases), "[unk]"]),
+    )
     rec.AcceptWaveform(pcm[:int(2.5 * SAMPLE_RATE)].astype(np.int16, copy=False).tobytes())
     heard = json.loads(rec.FinalResult()).get("text", "")
     log.info("Local wake candidate: %r", heard)
