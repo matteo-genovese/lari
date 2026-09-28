@@ -27,6 +27,8 @@ The browser displays **idle, listening, thinking, speaking and error** using ind
 
 Requirements: Python 3.11/3.12, Hermes with the API server enabled, the Hermes source tree (only for the optional openWakeWord engine), a separately downloaded Italian Vosk model, and HTTPS for mobile microphone access (localhost is exempt).
 
+Run `./setup.sh` to automate everything below (virtualenv, dependencies, Italian Vosk model, a generated `BUDDY_TOKEN` in `.env`), or do it by hand:
+
 ```bash
 git clone https://github.com/matteo-genovese/lari.git
 cd lari
