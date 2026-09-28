@@ -1576,7 +1576,10 @@ async def page(token: str):
 async def asset(token: str, asset_name: str):
     if not TOKEN or token != TOKEN:
         return Response(content="Forbidden", status_code=403)
-    if asset_name != "lare-concept.svg":
+    if asset_name not in {
+        "lare-concept.svg", "lare-idle.svg", "lare-listening.svg",
+        "lare-thinking.svg", "lare-speaking.svg", "lare-error.svg",
+    }:
         return Response(content="Not found", status_code=404)
     path = BASE_DIR / "static" / "assets" / asset_name
     if not path.is_file():

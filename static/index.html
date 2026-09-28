@@ -33,16 +33,16 @@
   }
   .lare-sprite{
     position:absolute; inset:0;
-    background-image:url("assets/lare-concept.svg"); background-repeat:no-repeat;
-    background-size:571.6% 150.9%; background-position:2% 37%;
+    background-image:url("assets/lare-idle.svg"); background-repeat:no-repeat;
+    background-size:contain; background-position:center;
     transform-origin:center 70%; will-change:transform,filter;
   }
   .orb .label{position:absolute; z-index:1; bottom:-18px; width:100%; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:rgba(232,236,244,.82); text-align:center; padding:0 12px}
-  .orb.lare_idle .lare-sprite{background-position:2% 37%; animation:lare_idle_breathe 4s ease-in-out infinite}
-  .orb.lare_listening .lare-sprite,.orb.lare_waking .lare-sprite,.orb.lare_recording .lare-sprite{background-position:26% 37%; animation:lare_listen_flicker 1.8s ease-in-out infinite}
-  .orb.lare_transcribing .lare-sprite,.orb.lare_thinking .lare-sprite{background-position:50% 37%; animation:lare_think_bob 2.1s ease-in-out infinite}
-  .orb.lare_speaking .lare-sprite{background-position:74% 37%; animation:lare_speak_pulse .72s ease-in-out infinite}
-  .orb.lare_error .lare-sprite{background-position:98% 37%; animation:lare_error_settle .6s ease-out both}
+  .orb.lare_idle .lare-sprite{animation:lare_idle_breathe 4s ease-in-out infinite}
+  .orb.lare_listening .lare-sprite,.orb.lare_waking .lare-sprite,.orb.lare_recording .lare-sprite{background-image:url("assets/lare-listening.svg"); animation:lare_listen_flicker 1.8s ease-in-out infinite}
+  .orb.lare_transcribing .lare-sprite,.orb.lare_thinking .lare-sprite{background-image:url("assets/lare-thinking.svg"); animation:lare_think_bob 2.1s ease-in-out infinite}
+  .orb.lare_speaking .lare-sprite{background-image:url("assets/lare-speaking.svg"); animation:lare_speak_pulse .72s ease-in-out infinite}
+  .orb.lare_error .lare-sprite{background-image:url("assets/lare-error.svg"); animation:lare_error_settle .6s ease-out both}
   @keyframes lare_idle_breathe{0%,100%{transform:translateY(2px) scale(.98)}50%{transform:translateY(-2px) scale(1.02)}}
   @keyframes lare_listen_flicker{0%,100%{transform:scale(1)}50%{transform:translateY(-2px) scale(1.035)}}
   @keyframes lare_think_bob{0%,100%{transform:translateY(2px)}50%{transform:translateY(-3px)}}

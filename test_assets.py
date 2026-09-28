@@ -24,7 +24,9 @@ class MascotAssetRouteTests(unittest.TestCase):
     def test_mobile_ui_loads_config_from_the_bridge_not_a_hard_coded_wake_phrase(self):
         response = self.get("/unit-test-token/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"assets/lare-concept.svg", response.content)
+        self.assertIn(b"assets/lare-idle.svg", response.content)
+        for state in ('listening', 'thinking', 'speaking', 'error'):
+            self.assertIn(f'assets/lare-{state}.svg'.encode(), response.content)
         self.assertNotIn(b"Ehi Lari", response.content)
         self.assertNotIn(b"Hey Lari", response.content)
 
@@ -43,6 +45,18 @@ class MascotAssetRouteTests(unittest.TestCase):
         response = self.get("/wrong-token/debug/last.wav")
         self.assertEqual(response.status_code, 403)
 
+    def test_each_mascot_state_has_a_separate_cropped_svg(self):
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+        for state in ('idle', 'listening', 'thinking', 'speaking', 'error'):
+            path = Path(server.BASE_DIR) / 'static' / 'assets' / f'lare-{state}.svg'
+            with self.subTest(state=state):
+                self.assertTrue(path.is_file())
+                root = ET.parse(path).getroot()
+                self.assertEqual(root.attrib.get('viewBox', '').split()[2:], ['360', '479'] if state != 'speaking' else ['396', '479'])
+                response = self.get(f'/unit-test-token/assets/lare-{state}.svg')
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('image/svg+xml', response.headers['content-type'])
     def test_asset_route_does_not_serve_arbitrary_files(self):
         response = self.get("/unit-test-token/assets/other.svg")
         self.assertEqual(response.status_code, 404)
