@@ -33,15 +33,12 @@
   .lare-sprite{
     position:absolute; inset:0;
     background:url("assets/lare-idle.svg") center / contain no-repeat;
-    transform-origin:center 70%;
   }
   .orb .label{position:absolute; bottom:-18px; width:100%; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); text-align:center}
-  .orb.idle .lare-sprite{animation:lare_breathe 4s ease-in-out infinite}
-  .orb.listening .lare-sprite,.orb.waking .lare-sprite,.orb.recording .lare-sprite{background-image:url("assets/lare-listening.svg"); animation:lare_breathe 1.8s ease-in-out infinite}
-  .orb.transcribing .lare-sprite,.orb.thinking .lare-sprite{background-image:url("assets/lare-thinking.svg"); animation:lare_breathe 2.1s ease-in-out infinite}
-  .orb.speaking .lare-sprite{background-image:url("assets/lare-speaking.svg"); animation:lare_breathe .72s ease-in-out infinite}
+  .orb.listening .lare-sprite,.orb.waking .lare-sprite,.orb.recording .lare-sprite{background-image:url("assets/lare-listening.svg")}
+  .orb.transcribing .lare-sprite,.orb.thinking .lare-sprite{background-image:url("assets/lare-thinking.svg")}
+  .orb.speaking .lare-sprite{background-image:url("assets/lare-speaking.svg")}
   .orb.error .lare-sprite{background-image:url("assets/lare-error.svg")}
-  @keyframes lare_breathe{0%,100%{transform:translateY(2px) scale(.98)}50%{transform:translateY(-2px) scale(1.02)}}
 
   .meter{width:190px; height:6px; border-radius:4px; background:var(--panel); overflow:hidden; border:1px solid var(--line)}
   .meter i{display:block; height:100%; width:0%; background:var(--accent); transition:width .1s linear}

@@ -45,15 +45,25 @@ class MascotAssetRouteTests(unittest.TestCase):
         response = self.get("/wrong-token/debug/last.wav")
         self.assertEqual(response.status_code, 403)
 
-    def test_each_mascot_state_has_a_separate_cropped_svg(self):
+    def test_each_mascot_state_has_a_separate_animated_svg(self):
         import xml.etree.ElementTree as ET
         from pathlib import Path
-        for state in ('idle', 'listening', 'thinking', 'speaking', 'error'):
+        design_state = {'idle': 'idle', 'listening': 'listen', 'thinking': 'think',
+                        'speaking': 'speak', 'error': 'error'}
+        for state, design in design_state.items():
             path = Path(server.BASE_DIR) / 'static' / 'assets' / f'lare-{state}.svg'
             with self.subTest(state=state):
                 self.assertTrue(path.is_file())
                 root = ET.parse(path).getroot()
-                self.assertEqual(root.attrib.get('viewBox', '').split()[2:], ['360', '479'] if state != 'speaking' else ['396', '479'])
+                self.assertEqual(root.attrib.get('viewBox', '').split(),
+                                 ['0', '0', '380', '380'])
+                self.assertEqual(root.attrib.get('data-state'), design)
+                body = path.read_text()
+                self.assertNotIn('class="demo"', body)
+                self.assertIn(f'<g id="{design}-state"', body)
+                for other in design_state.values():
+                    if other != design:
+                        self.assertNotIn(f'<g id="{other}-state"', body)
                 response = self.get(f'/unit-test-token/assets/lare-{state}.svg')
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('image/svg+xml', response.headers['content-type'])
