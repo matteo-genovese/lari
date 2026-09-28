@@ -26,6 +26,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 
 import stt_backends
+import wake_config
 
 BASE_DIR = Path(__file__).resolve().parent
 HERMES_ROOT = Path(os.environ.get("BUDDY_HERMES_ROOT") or (Path.home() / ".hermes" / "hermes-agent")).expanduser()
@@ -134,35 +135,27 @@ FRAME = 1280              # 80 ms @ 16 kHz, dimensione consigliata da openWakeWo
 WAKE_PROVIDER = os.environ.get("BUDDY_WAKE_PROVIDER", "whisper")
 # whisper: qualsiasi parlato apre la registrazione, poi si cerca la frase nel testo.
 # sherpa/openwakeword: motore hotword dedicato (inglese; non coglie la pronuncia IT).
-# Solo all'inizio dell'enunciato: evita attivazioni su «ho parlato con Nic».
-# «E Nic» è la variante osservata sul telefono, non una deduzione.
-WAKE_RE = re.compile(
-    os.environ.get(
-        "BUDDY_WAKE_RE",
-        # Nome tollerante alle varianti ASR di «Nic» ("Nica", "Nici", "Niko",
-        # "Nick"): consonante + al massimo una vocale spuria, oltre \b escluso
-        # nomi lunghi (Nicola, Nicole) che il lookbehind lessicale non fermerebbe.
-        r"^\s*(?:(?:hey|ehi|eh|e|hi|ok|ciao|yo)[\s,.!?:;-]*)?n[iy](?:c+k?|k+)[aieo]?\b",
-    ),
-    re.IGNORECASE,
-)
+# The wake phrase is one setting: command regex, Vosk grammar, junk cleanup and
+# ASR keyterms all derive from it in wake_config.py.  The regex is
+# start-anchored so background mentions ("ho parlato con ...") never trigger.
+WAKE_CONFIG = wake_config.from_env()
+WAKE_RE = WAKE_CONFIG.command_re
 
-def wake_command(text: str) -> str | None:
-    """Ritorna il comando dopo il wake; None se non è rivolto a Nic."""
-    match = WAKE_RE.search(text)
-    if not match:
-        return None
-    return text[match.end():].lstrip(" ,.!?;:-\u2019'\u201c\u201d")
-def resolve_command(text: str, conversation_until: float, now: float) -> str | None:
+def wake_command(text: str, cfg: wake_config.WakeConfig | None = None) -> str | None:
+    """Return the request after the wake; None when not addressed to us."""
+    return (cfg or WAKE_CONFIG).command(text)
+
+def resolve_command(text: str, conversation_until: float, now: float,
+                    cfg: wake_config.WakeConfig | None = None) -> str | None:
     """Wake al primo turno, poi dialogo libero solo nella finestra di follow-up."""
-    command = wake_command(text)
+    command = wake_command(text, cfg)
     if command is not None:
         return command
     if now < conversation_until and text.strip():
         return text.strip()
     return None
 
-WAKE_PHRASE = os.environ.get("BUDDY_WAKE_PHRASE", "hey nic")
+WAKE_PHRASE = WAKE_CONFIG.phrase
 # soglia sherpa = 0.05 + 0.4*sens; 0.5 -> 0.25 (valore consigliato upstream)
 WAKE_SENSITIVITY = float(os.environ.get("BUDDY_SENSITIVITY", "0.5"))
 CONFIRM_FRAMES = int(os.environ.get("BUDDY_CONFIRM_FRAMES", "3"))
@@ -235,7 +228,7 @@ def transcribe(pcm: np.ndarray, model: str | None = None) -> str:
         condition_on_previous_text=False,   # altrimenti il modello si auto-alimenta di ripetizioni
         # prompt CORTO: un prompt lungo viene ripetuto dall'ASR al posto dell'audio
         # (hallucination), specialmente sulle registrazioni rumorose
-        initial_prompt="Hey Nic. Ehi Nic.",
+        initial_prompt=WAKE_CONFIG.prompt,
     )
     text = " ".join(s.text for s in segments).strip()
     log.info("STT lang=%s prob=%.2f -> %r", info.language, info.language_probability, text)
@@ -264,14 +257,15 @@ def get_vosk():
             _vosk_model = Model(str(VOSK_MODEL_DIR))
         return _vosk_model
 
-def vosk_wake(pcm: np.ndarray) -> bool:
+def vosk_wake(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> bool:
     """Rileva il wake nei primi 2.5 s senza forzare il resto nella grammar."""
     from vosk import KaldiRecognizer
-    rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE, json.dumps(["ehi nic", "hey nic", "nic", "[unk]"]))
+    cfg = cfg or WAKE_CONFIG
+    rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE, json.dumps(list(cfg.grammar)))
     rec.AcceptWaveform(pcm[:int(2.5 * SAMPLE_RATE)].astype(np.int16, copy=False).tobytes())
     heard = json.loads(rec.FinalResult()).get("text", "")
     log.info("Vosk wake: %r", heard)
-    return bool(re.search(r"\b(?:ehi nic|hey nic|nic)\b", heard))
+    return bool(cfg.loose_re.search(heard))
 
 def transcribe_vosk(pcm: np.ndarray) -> str:
     """Trascrizione italiana CPU locale, a blocchi dell'enunciato."""
@@ -287,16 +281,18 @@ def transcribe_vosk(pcm: np.ndarray) -> str:
     log.info("Vosk STT -> %r", text)
     return text
 
-def resolve_vosk_command(text: str, wake: bool, followup: bool) -> str | None:
+def resolve_vosk_command(text: str, wake: bool, followup: bool,
+                         cfg: wake_config.WakeConfig | None = None) -> str | None:
     if not wake and not followup:
         return None
+    cfg = cfg or WAKE_CONFIG
     if wake:
-        command = wake_command(text)
+        command = wake_command(text, cfg)
         if command is not None:
             return command
-        # Il modello libero talvolta rende «Ehi Nic» come una singola parola
-        # spuria; il wake è stato confermato dalla grammar separata.
-        text = re.sub(r"^(?:(?:inc|heinrich|di|ehi|hey)\b\s*){1,2}", "", text, flags=re.IGNORECASE)
+        # Free-form ASR sometimes renders the wake as one spurious word; the
+        # separate grammar already confirmed it, so strip up to two junk words.
+        text = cfg.strip_junk(text)
     return text.strip()
 
 def _transcribe_local_fallback(pcm: np.ndarray) -> str:
@@ -1588,7 +1584,7 @@ async def ws_endpoint(token: str, websocket: WebSocket):
     worker.start()
     await session.send_json({
         "type": "state", "state": "listening",
-        "phrase": WAKE_PHRASE, "provider": WAKE_PROVIDER,
+        "phrase": WAKE_CONFIG.display, "provider": WAKE_PROVIDER,
         "voice": TTS_VOICE, "sensitivity": WAKE_SENSITIVITY,
         "confirm_frames": CONFIRM_FRAMES,
     })

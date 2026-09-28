@@ -1,4 +1,7 @@
 """Unit tests for local Vosk wake and transcription routing."""
+import json
+import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -6,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 
 import server
+from wake_config import build_wake_config
 
 
 class VoskRoutingTests(unittest.TestCase):
@@ -33,6 +37,34 @@ class VoskRoutingTests(unittest.TestCase):
             result = server.decode_utterance(self.audio, followup=True, backend="vosk")
         self.assertEqual(result, "follow-up question")
         wake.assert_not_called()
+
+
+class VoskGrammarTests(unittest.TestCase):
+    def test_vosk_gate_uses_the_configured_grammar_and_detection(self):
+        cfg = build_wake_config("hey nic")
+        captured = {}
+        fake_vosk = types.ModuleType("vosk")
+
+        class FakeRecognizer:
+            def __init__(self, model, rate, grammar=None):
+                captured["grammar"] = grammar
+
+            def AcceptWaveform(self, raw):
+                return True
+
+            def FinalResult(self):
+                return json.dumps({"text": "ehi nic"})
+
+            def Result(self):
+                return json.dumps({"text": ""})
+
+        fake_vosk.KaldiRecognizer = FakeRecognizer
+        fake_vosk.Model = lambda *args, **kwargs: object()
+        fake_vosk.SetLogLevel = lambda *args: None
+        with patch.object(server, "get_vosk", return_value=object()), \
+             patch.dict(sys.modules, {"vosk": fake_vosk}):
+            self.assertTrue(server.vosk_wake(np.zeros(1600, dtype=np.int16), cfg))
+        self.assertEqual(captured["grammar"], json.dumps(list(cfg.grammar)))
 
 
 class VoskSessionTests(unittest.IsolatedAsyncioTestCase):

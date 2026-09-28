@@ -2,7 +2,7 @@
 
 **Lari** is a self-hosted voice bridge for [Hermes](https://github.com/NousResearch/hermes-agent). A phone browser acts as a microphone and speaker; Hermes remains the assistant brain. Each satellite is a **Lare**, represented by the five-state flame mascot. A dedicated hardware satellite is future work.
 
-> **Current scope:** this is the proven Italian voice runtime with a *visual* rebrand. The working installation still uses `BUDDY_*` environment variables and a legacy wake gate tuned for “Hey Nic”. Renaming the mascot does **not** change its wake phrase. Do not change `BUDDY_WAKE_PHRASE` alone: the Vosk grammar, local ASR prefix regex and provider keyterms must agree, and another phrase needs real-voice calibration before use.
+> **Wake phrase:** one setting drives the whole pipeline. `BUDDY_WAKE_PHRASE` (default `ehi lari`, or `hey lari` for a non-Italian `BUDDY_STT_LANG`) rebuilds the command regex, the Vosk wake grammar, the junk cleanup and the provider keyterms automatically. The runtime keeps the legacy `BUDDY_*` names. A new phrase still deserves real-voice calibration: replay real recordings through the gate and add the observed ASR variants to `BUDDY_WAKE_ALIASES`.
 
 ## How it works
 
@@ -53,14 +53,17 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 - `BUDDY_STT_BACKEND`: `whisper` (local), `vosk`, `elevenlabs_realtime` or other configured backend.
 - `BUDDY_STT_MODEL`, `BUDDY_STT_LANG`: local fallback model and language.
 - `BUDDY_VOSK_MODEL_DIR`: extracted Vosk model directory; must contain `am/final.mdl`.
-- `BUDDY_WAKE_PHRASE`, `BUDDY_WAKE_RE`: legacy wake configuration; changing the phrase needs grammar/keyterm alignment and a real-voice test.
+- `BUDDY_WAKE_PHRASE`: the wake phrase; command regex, Vosk grammar, junk cleanup and keyterms all derive from it (default `ehi lari`/`hey lari` by `BUDDY_STT_LANG`).
+- `BUDDY_WAKE_ALIASES`: comma-separated extra accepted renderings (observed ASR variants); extends matching, grammar and cleanup.
+- `BUDDY_STT_KEYTERMS`: comma-separated vocabulary (names, places) biased in cloud STT; the realtime path drops terms longer than 20 characters.
+- `BUDDY_WAKE_RE`: full command-regex override for advanced calibration.
 - `BUDDY_REALTIME_DAILY_SECONDS`: local limit on seconds sent to Realtime, **not** a hard account spending limit.
 
 See `.env.example` for a minimal, nonsecret template. The UI brand is independent of the voice identity. Avoid putting installation-specific private URLs, recordings or downloaded models into repository files.
 
 ## Privacy, costs and testing
 
-- Wake confirmation uses Vosk plus local faster-whisper. ElevenLabs Realtime opens **only after** the local gate. If Realtime is unavailable or reaches its local usage limit, transcription falls back to local STT rather than paid batch. Local models consume CPU; ElevenLabs incurs provider usage when selected.
+- Wake confirmation uses Vosk plus local faster-whisper. ElevenLabs Realtime opens **only after** the local gate. If Realtime is unavailable or reaches its local usage limit, transcription falls back to local STT rather than paid batch. Local models consume CPU; ElevenLabs incurs provider usage when selected. The Vosk gate is a deliberately loose candidate detector: its constrained grammar maps near-miss speech onto the wake phrase, so strict rejection happens when the command is extracted from the transcript.
 - The microphone is muted while the phone plays the response and through the echo tail. The interrupt button is **not** voice barge-in.
 - The token-protected diagnostic route `/<token>/debug/last.wav` can return captured microphone audio. Limit token access, do not publish recordings, and remove/restrict this route if remote diagnostics are unwanted.
 - Tests run without provider credentials or private recordings:

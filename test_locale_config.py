@@ -17,6 +17,7 @@ def inspect_config(extra):
         "print(json.dumps({'wake': server.WAKE_PHRASE, "
         "'backend': server.STT_BACKEND, "
         "'vosk': server.VOSK_MODEL_DIR.name, "
+        "'aliases': list(server.WAKE_CONFIG.aliases), "
         "'root': str(server.HERMES_ROOT)}))"
     )
     result = subprocess.run(
@@ -47,6 +48,17 @@ class WorkingVoiceConfigTests(unittest.TestCase):
                 text=True, capture_output=True, check=True,
             )
             self.assertEqual(result.stdout.strip(), custom_root)
+
+    def test_default_wake_phrase_follows_the_language(self):
+        self.assertEqual(inspect_config({"BUDDY_STT_LANG": "it"})["wake"], "ehi lari")
+        self.assertEqual(inspect_config({"BUDDY_STT_LANG": "en"})["wake"], "hey lari")
+
+    def test_wake_aliases_reach_the_runtime_config(self):
+        config = inspect_config({
+            "BUDDY_WAKE_PHRASE": "ehi lari",
+            "BUDDY_WAKE_ALIASES": "ehi lare, hey lar",
+        })
+        self.assertEqual(config["aliases"], ["ehi lare", "hey lar"])
 
     def test_legacy_voice_settings_are_not_replaced_by_brand_settings(self):
         config = inspect_config({

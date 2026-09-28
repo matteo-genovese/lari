@@ -28,6 +28,8 @@ from typing import Awaitable, Callable
 import numpy as np
 import websockets
 
+import wake_config
+
 log = logging.getLogger(__name__)
 
 BACKENDS = ("elevenlabs", "groq", "openai")
@@ -37,27 +39,18 @@ KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
-# ElevenLabs batch keyterms (<= 5 parole ciascuno, <= 1000 totali): bias sui
-# nomi propri che sbaglia più spesso. Scribe v2 con keyterms costa +20% sul base.
-KEYTERMS = [
-    "Hey Nic",
-    "Ehi Nic",
-    "centro commerciale Aura",
-    "Roma Termini",
-]
+# Wake-derived ASR bias terms: keyterms, style prompt and the realtime URL all
+# derive from the configured wake phrase plus the optional BUDDY_STT_KEYTERMS
+# vocabulary (names and places the ASR misrenders).
+_WAKE = wake_config.from_env()
+# ElevenLabs batch keyterms (<= 5 words each, <= 1000 total). Scribe v2 with
+# keyterms costs +20% over the base rate.
+KEYTERMS = list(_WAKE.batch_keyterms)
 # Realtime accepts at most 20 characters per keyterm. These are encoded as
 # repeated query parameters below, as required by the WebSocket API.
-REALTIME_KEYTERMS = (
-    "Hey Nic",
-    "Ehi Nic",
-    "Aura",
-    "Roma Termini",
-)
+REALTIME_KEYTERMS = _WAKE.realtime_keyterms
 # Groq/OpenAI accettano solo un prompt di stile (max 224 token per Groq).
-STYLE_PROMPT = (
-    "Italiano. Frase di sveglia: Hey Nic / Ehi Nic. "
-    "Nomi propri: Nic, Aura (centro commerciale Aura), Roma Termini."
-)
+STYLE_PROMPT = _WAKE.style_prompt
 
 REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?" + urlencode(
     [

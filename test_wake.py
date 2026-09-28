@@ -6,14 +6,23 @@ from pathlib import Path
 import numpy as np
 import wave
 
-from server import WAKE_RE, wake_command, save_turn_audio, Session, resolve_command
+from functools import partial
+
+from server import wake_command as _wake_command, save_turn_audio, Session, resolve_command as _resolve_command
+from wake_config import build_wake_config
+
+# Parity suite for the tuned live phrase: every observed variant must survive
+# the derived wake config unchanged.
+NIC = build_wake_config("hey nic")
+wake_command = partial(_wake_command, cfg=NIC)
+resolve_command = partial(_resolve_command, cfg=NIC)
 
 
 class WakeTests(unittest.TestCase):
     def test_real_phone_transcript_is_not_discarded(self):
         text = ('E Nic, che ti ando farò mani a Roma, voi andare a first show, '
                 'quindi il centro con me ci ha le augure.')
-        self.assertIsNotNone(WAKE_RE.search(text))
+        self.assertIsNotNone(NIC.command_re.search(text))
         self.assertEqual(wake_command(text), text.split(',', 1)[1].strip())
 
     def test_wake_variants_from_asr_are_accepted(self):

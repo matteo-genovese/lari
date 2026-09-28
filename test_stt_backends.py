@@ -25,6 +25,7 @@ class ElevenLabsTests(unittest.TestCase):
     def test_posts_scribe_v2_with_raw_pcm_keyterms_and_parses_text(self):
         fake_post.captured = None
         with patch.dict(os.environ, {'ELEVENLABS_API_KEY': 'k-el'}), \
+             patch.object(stt_backends, 'KEYTERMS', ['Sentinel Term']), \
              patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Ehi Nic, che tempo fa a Roma?'})):
             text = stt_backends.transcribe(PCM, 'elevenlabs')
         self.assertEqual(text, 'Ehi Nic, che tempo fa a Roma?')
@@ -36,8 +37,7 @@ class ElevenLabsTests(unittest.TestCase):
         self.assertEqual(data['file_format'], 'pcm_s16le_16')
         self.assertEqual(data['language_code'], 'it')
         keyterms = [v for k, v in call['data_tuples'] if k == 'keyterms']
-        self.assertIn('Hey Nic', keyterms)
-        self.assertIn('centro commerciale Aura', keyterms)
+        self.assertEqual(keyterms, ['Sentinel Term'])
         self.assertEqual(call['file_bytes'], PCM.tobytes())  # PCM nudo, non WAV
 
 
@@ -45,6 +45,7 @@ class GroqTests(unittest.TestCase):
     def test_posts_whisper_turbo_with_prompt_and_parses_text(self):
         fake_post.captured = None
         with patch.dict(os.environ, {'GROQ_API_KEY': 'k-gq'}), \
+             patch.object(stt_backends, 'STYLE_PROMPT', 'sentinel style'), \
              patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Che tempo fa domani a Roma?'})):
             text = stt_backends.transcribe(PCM, 'groq')
         self.assertEqual(text, 'Che tempo fa domani a Roma?')
@@ -54,7 +55,7 @@ class GroqTests(unittest.TestCase):
         data = dict(call['data_tuples'])
         self.assertEqual(data['model'], 'whisper-large-v3')
         self.assertEqual(data['language'], 'it')
-        self.assertIn('Hey Nic', data['prompt'])
+        self.assertEqual(data['prompt'], 'sentinel style')
         self.assertEqual(call['file_bytes'][:4], b'RIFF')  # WAV per Groq
 
 
@@ -95,11 +96,39 @@ class FailureTests(unittest.TestCase):
             stt_backends.transcribe(PCM, 'craiyon')
 
 
+class WakeTermDerivationTests(unittest.TestCase):
+    def test_provider_terms_derive_from_the_configured_wake(self):
+        import json
+        import subprocess
+        import sys
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "BUDDY_WAKE_PHRASE": "ehi lari",
+            "BUDDY_STT_KEYTERMS": "Aura",
+        }
+        code = (
+            "import json, stt_backends; print(json.dumps({"
+            "'rt': list(stt_backends.REALTIME_KEYTERMS), "
+            "'kt': list(stt_backends.KEYTERMS), "
+            "'p': stt_backends.STYLE_PROMPT}))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], env=env, text=True,
+            capture_output=True, check=True,
+        )
+        data = json.loads(result.stdout.splitlines()[-1])
+        self.assertEqual(data["rt"], ["Ehi Lari", "Hey Lari", "Lari", "Aura"])
+        self.assertEqual(data["kt"], data["rt"])
+        self.assertIn("Ehi Lari / Hey Lari", data["p"])
+        self.assertIn("Aura", data["p"])
+
+
 class ServerRoutingTests(unittest.TestCase):
     def test_cloud_decode_keeps_wake_gate_and_followup(self):
         import server
+        transcript = f'{server.WAKE_CONFIG.display}, che tempo fa a Roma?'
         with patch.object(server.stt_backends, 'transcribe',
-                          return_value='Ehi Nic, che tempo fa a Roma?') as mocked:
+                          return_value=transcript) as mocked:
             cmd = server.decode_utterance(PCM, followup=False, backend='groq')
             self.assertEqual(cmd, 'che tempo fa a Roma?')
             follow = server.decode_utterance(PCM, followup=True, backend='groq')
