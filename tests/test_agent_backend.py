@@ -9,8 +9,8 @@ import unittest
 from unittest.mock import AsyncMock, patch
 import httpx
 
-import server
-from server import Session
+from lari import server
+from lari.server import Session
 
 
 class DeepSeekDirectTests(unittest.TestCase):

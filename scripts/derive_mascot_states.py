@@ -6,12 +6,12 @@ demo mode.  Each runtime asset keeps the source's shared defs and animation
 CSS plus exactly one state group, pinned visible by the source's own
 `svg[data-state=...]` selector.  Usage:
 
-    .venv/bin/python derive_mascot_states.py
+    .venv/bin/python scripts/derive_mascot_states.py
 """
 from pathlib import Path
 import re
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "static" / "assets" / "lare-concept.svg"
 TARGETS = {"idle": "idle", "listening": "listen", "thinking": "think",
            "speaking": "speak", "error": "error"}

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import numpy as np
 
-import server
+from lari import server
 
 
 class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):

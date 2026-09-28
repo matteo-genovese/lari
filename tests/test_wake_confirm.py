@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-import server
-from wake_config import build_wake_config
+from lari import server
+from lari.wake_config import build_wake_config
 
 LARI = build_wake_config("hey lari")
 

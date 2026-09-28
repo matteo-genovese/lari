@@ -11,7 +11,7 @@ import unittest
 
 import numpy as np
 
-import server
+from lari import server
 
 SR = server.SAMPLE_RATE
 

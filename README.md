@@ -21,11 +21,11 @@ Phone browser ── 16 kHz PCM via WebSocket ──► local wake gate → VAD 
 Phone speaker ◄──── segmented edge-tts audio ◄──── Hermes API (same conversation)
 ```
 
-The browser displays **idle, listening, thinking, speaking and error** using individually derived animated SVG assets; `derive_mascot_states.py` rebuilds them from the editable animated source `static/assets/lare-concept.svg` (which doubles as the state-cycle demo at `/<token>/assets/lare-concept.svg`). Each asset carries only its own state's motion. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge does not open a provider connection until the local wake gate confirms the utterance.
+The browser displays **idle, listening, thinking, speaking and error** using individually derived animated SVG assets; `scripts/derive_mascot_states.py` rebuilds them from the editable animated source `static/assets/lare-concept.svg` (which doubles as the state-cycle demo at `/<token>/assets/lare-concept.svg`). Each asset carries only its own state's motion. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge does not open a provider connection until the local wake gate confirms the utterance.
 
 ## Quick start
 
-Requirements: Python 3.11/3.12, Hermes with the API server enabled, the Hermes source tree (for its wake engine), a separately downloaded Italian Vosk model, and HTTPS for mobile microphone access (localhost is exempt).
+Requirements: Python 3.11/3.12, Hermes with the API server enabled, the Hermes source tree (only for the optional openWakeWord engine), a separately downloaded Italian Vosk model, and HTTPS for mobile microphone access (localhost is exempt).
 
 ```bash
 git clone https://github.com/matteo-genovese/lari.git
@@ -47,8 +47,10 @@ Run the bridge after loading your private environment:
 set -a
 . ./.env
 set +a
-.venv/bin/uvicorn server:app --host 127.0.0.1 --port "${BUDDY_PORT:-8643}"
+.venv/bin/uvicorn lari.server:app --host 127.0.0.1 --port "${BUDDY_PORT:-8643}"
 ```
+
+Under systemd use `ExecStart=<repo>/.venv/bin/python -m lari.server` with `WorkingDirectory` set to the repository root.
 
 Expose it **only** through a private network with HTTPS (for example, Tailscale Serve). Open `https://<your-private-host>/<your-token>/` in the phone browser and press **Avvia ascolto**. The initial red *disconnesso* indicator is expected before starting the microphone/WebSocket. Keep the page foregrounded and the phone awake. Never expose this token-protected bridge directly to the open internet: it can invoke Hermes tools.
 
@@ -86,10 +88,10 @@ Add the page to your home screen (PWA): the manifest and service worker make it 
 
 ```bash
 .venv/bin/python -m unittest discover -q
-.venv/bin/python -m py_compile server.py stt_backends.py wake_config.py
+.venv/bin/python -m py_compile lari/server.py lari/stt_backends.py lari/wake_config.py
 ```
 
-`bench_wake_gate.py` is the second gate's A/B benchmark: it replays real recordings through the candidate gate and the veto and reports the three decision numbers (false negatives on real wakes, added latency, candidate seconds kept away from the paid provider).
+`scripts/bench_wake_gate.py` is the second gate's A/B benchmark: it replays real recordings through the candidate gate and the veto and reports the three decision numbers (false negatives on real wakes, added latency, candidate seconds kept away from the paid provider).
 
 A green unit suite is not an on-phone wake test: validate wake → transcription → Hermes → audible TTS on the actual device before changing the wake configuration.
 

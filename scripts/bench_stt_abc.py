@@ -15,10 +15,10 @@ from pathlib import Path
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import stt_backends  # noqa: E402
+from lari import stt_backends  # noqa: E402
 
 
 
@@ -41,7 +41,7 @@ def main() -> int:
         if os.environ.get(key_env, "").strip():
             jobs.append((backend, lambda pcm, selected=backend: stt_backends.transcribe(pcm, selected)))
     if args.local:
-        import server
+        from lari import server
         jobs.extend((("vosk (local)", server.transcribe_vosk),
                      ("faster-whisper (local)", server.transcribe)))
     if not jobs:

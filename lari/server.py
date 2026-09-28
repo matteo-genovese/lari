@@ -25,10 +25,10 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 
-import stt_backends
-import wake_config
+from . import stt_backends
+from . import wake_config
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent  # repo root; runtime paths never depend on cwd
 HERMES_ROOT = Path(os.environ.get("BUDDY_HERMES_ROOT") or (Path.home() / ".hermes" / "hermes-agent")).expanduser()
 sys.path.insert(0, str(HERMES_ROOT))
 
@@ -63,7 +63,7 @@ HERMES_MODEL = os.environ.get("BUDDY_HERMES_MODEL", "deepseek-flash")
 # much slower: 18k tokens of system prompt per utterance).
 AGENT_BACKEND = os.environ.get("BUDDY_AGENT_BACKEND", "deepseek").strip()
 
-import usage  # noqa: E402  (project module)
+from . import usage  # noqa: E402  (project module)
 USAGE_LEDGER = usage.UsageLedger()
 
 def _deepseek_from_hermes_env() -> tuple[str, str]:

@@ -6,9 +6,9 @@ import re
 import unittest
 from unittest.mock import patch
 
-import wake_config
+from lari import wake_config
 
-from wake_config import build_wake_config, default_phrase
+from lari.wake_config import build_wake_config, default_phrase
 
 
 class ProvenWakeParityTests(unittest.TestCase):

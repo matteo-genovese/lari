@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 
-import stt_backends
+from lari import stt_backends
 
 
 def _reserve_budget_in_process(path, barrier, results):
@@ -285,7 +285,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake.sent, [])
 
     async def test_realtime_failure_falls_back_local_without_batch(self):
-        import server
+        from lari import server
 
         pcm = np.zeros(1600, dtype=np.int16)
         local = Mock(return_value="Ehi Lari, local")
@@ -310,7 +310,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         paid_batch.assert_not_called()
 
     async def test_realtime_provider_failure_never_uses_paid_batch(self):
-        import server
+        from lari import server
 
         pcm = np.zeros(1600, dtype=np.int16)
         local = Mock(return_value="testo locale")

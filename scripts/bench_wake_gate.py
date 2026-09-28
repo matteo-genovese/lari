@@ -7,7 +7,7 @@ clips, added latency on candidates, and candidate seconds a veto would keep
 away from the paid provider.  Private recordings stay outside the repository.
 
 Usage:
-    BUDDY_WAKE_PHRASE='ehi lari' .venv/bin/python bench_wake_gate.py <wav...>
+    BUDDY_WAKE_PHRASE='ehi lari' .venv/bin/python scripts/bench_wake_gate.py <wav...>
 """
 import sys
 import time
@@ -16,8 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
-import server
-import wake_config
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lari import server, wake_config
 
 
 def load(path: Path) -> np.ndarray:

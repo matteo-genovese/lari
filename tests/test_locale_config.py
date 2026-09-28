@@ -6,14 +6,14 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def inspect_config(extra):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("BUDDY_", "LARI_"))}
     env.update(extra)
     code = (
-        "import json, pathlib, server; "
+        "import json, pathlib; from lari import server; "
         "print(json.dumps({'wake': server.WAKE_PHRASE, "
         "'backend': server.STT_BACKEND, "
         "'vosk': server.VOSK_MODEL_DIR.name, "
@@ -41,7 +41,7 @@ class WorkingVoiceConfigTests(unittest.TestCase):
             code = (
                 "import sys,types; sys.modules['tools']=types.ModuleType('tools'); "
                 "m=types.ModuleType('tools.wake_word'); m._build_engine=None; "
-                "sys.modules['tools.wake_word']=m; import server; print(server.HERMES_ROOT)"
+                "sys.modules['tools.wake_word']=m; from lari import server; print(server.HERMES_ROOT)"
             )
             result = subprocess.run(
                 [sys.executable, "-c", code], cwd=ROOT, env=env,

@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import httpx
 
-import server
-import usage
+from lari import server
+from lari import usage
 
 
 class UsageLedgerTests(unittest.TestCase):

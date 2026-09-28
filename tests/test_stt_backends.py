@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-import stt_backends
+from lari import stt_backends
 
 PCM = np.arange(3200, dtype=np.int16)  # 0.2 s of 16 kHz mono
 
@@ -107,7 +107,7 @@ class WakeTermDerivationTests(unittest.TestCase):
             "BUDDY_STT_KEYTERMS": "Aura",
         }
         code = (
-            "import json, stt_backends; print(json.dumps({"
+            "import json; from lari import stt_backends; print(json.dumps({"
             "'rt': list(stt_backends.REALTIME_KEYTERMS), "
             "'kt': list(stt_backends.KEYTERMS), "
             "'p': stt_backends.STYLE_PROMPT}))"
@@ -125,7 +125,7 @@ class WakeTermDerivationTests(unittest.TestCase):
 
 class ServerRoutingTests(unittest.TestCase):
     def test_cloud_decode_keeps_wake_gate_and_followup(self):
-        import server
+        from lari import server
         transcript = f'{server.WAKE_CONFIG.display}, che tempo fa a Roma?'
         with patch.object(server.stt_backends, 'transcribe',
                           return_value=transcript) as mocked:
@@ -139,7 +139,7 @@ class ServerRoutingTests(unittest.TestCase):
         self.assertEqual(mocked.call_args.args[1], 'groq')
 
     def test_cloud_decode_rejects_speech_without_wake(self):
-        import server
+        from lari import server
         with patch.object(server.stt_backends, 'transcribe',
                           return_value='Ho parlato con Nic di lavoro.'):
             self.assertIsNone(server.decode_utterance(PCM, followup=False, backend='openai'))
@@ -153,7 +153,7 @@ class RuntimeDispatchTests(unittest.TestCase):
 
         The wiring in _on_wake was broken even with a correct decode_utterance.
         """
-        import server
+        from lari import server
         with patch.object(server, 'STT_BACKEND', 'groq'), \
              patch.object(server.stt_backends, 'transcribe',
                           return_value='Ehi Nic, che tempo fa?') as cloud, \
@@ -165,7 +165,7 @@ class RuntimeDispatchTests(unittest.TestCase):
         local.assert_not_called()
 
     def test_whisper_local_is_the_fallback(self):
-        import server
+        from lari import server
         with patch.object(server, 'STT_BACKEND', 'whisper'), \
              patch.object(server, 'transcribe', return_value='Ehi Nic.') as local:
             self.assertEqual(server.stt_transcribe(PCM), 'Ehi Nic.')

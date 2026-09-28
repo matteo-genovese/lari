@@ -5,7 +5,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-HTML = Path(__file__).resolve().parent / "static" / "index.html"
+HTML = Path(__file__).resolve().parent.parent / "static" / "index.html"
 
 
 @unittest.skipUnless(shutil.which("node"), "Node is needed for the inline-browser test")

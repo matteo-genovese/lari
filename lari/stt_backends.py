@@ -28,7 +28,7 @@ from typing import Awaitable, Callable
 import numpy as np
 import websockets
 
-import wake_config
+from . import wake_config
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class DailyAudioBudget:
 
     def __init__(self, path: str | Path | None = None,
                  daily_seconds: float | None = None):
-        default_path = Path(__file__).resolve().parent / ".realtime_stt_usage.json"
+        default_path = Path(__file__).resolve().parent.parent / ".realtime_stt_usage.json"
         self.path = Path(path or os.environ.get("BUDDY_REALTIME_USAGE_FILE", default_path))
         self.daily_seconds = float(
             os.environ.get("BUDDY_REALTIME_DAILY_SECONDS", REALTIME_DAILY_SECONDS)

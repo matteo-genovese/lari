@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import httpx
 
-import server
+from lari import server
 
 
 class MascotAssetRouteTests(unittest.TestCase):
