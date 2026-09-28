@@ -156,6 +156,11 @@ def resolve_command(text: str, conversation_until: float, now: float,
     return None
 
 WAKE_PHRASE = WAKE_CONFIG.phrase
+# Second local gate on the wake candidate, before any provider connection.
+# It may veto only a confident mismatch (see confirm_candidate): every doubt
+# passes, so a real wake is never lost to an ASR mishearing.  Set
+# BUDDY_WAKE_CONFIRM=0 to disable.
+WAKE_CONFIRM = os.environ.get("BUDDY_WAKE_CONFIRM", "1").strip() != "0"
 # soglia sherpa = 0.05 + 0.4*sens; 0.5 -> 0.25 (valore consigliato upstream)
 WAKE_SENSITIVITY = float(os.environ.get("BUDDY_SENSITIVITY", "0.5"))
 CONFIRM_FRAMES = int(os.environ.get("BUDDY_CONFIRM_FRAMES", "3"))
@@ -294,6 +299,37 @@ def resolve_vosk_command(text: str, wake: bool, followup: bool,
         # separate grammar already confirmed it, so strip up to two junk words.
         text = cfg.strip_junk(text)
     return text.strip()
+
+def confirm_candidate(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> bool:
+    """Second local gate on the 2.5 s candidate only, before Realtime opens.
+
+    Returns True (pass) unless both local recognizers confidently transcribe
+    clear non-wake speech.  A false negative costs more than the credits it
+    saves, so every doubt passes.  The slow model runs only when the fast
+    Vosk transcription is already clean, keeping true positives cheap.
+    """
+    cfg = cfg or WAKE_CONFIG
+    prefix = pcm[:int(2.5 * SAMPLE_RATE)]
+    t0 = time.monotonic()
+    try:
+        free = transcribe_vosk(prefix)
+    except Exception:
+        log.exception("second gate: Vosk libero non disponibile")
+        free = ""
+    if not cfg.confidently_clean(free):
+        log.info("second gate %.2fs: dubbio su %r -> pass",
+                 time.monotonic() - t0, free[:60])
+        return True
+    try:
+        heard = transcribe(prefix)
+    except Exception:
+        log.exception("second gate: faster-whisper non disponibile")
+        return True
+    passed = not cfg.confidently_clean(heard)
+    log.info("second gate %.2fs: free=%r whisper=%r -> %s",
+             time.monotonic() - t0, free[:60], heard[:60],
+             "pass" if passed else "veto")
+    return passed
 
 def _transcribe_local_fallback(pcm: np.ndarray) -> str:
     """Transcribe realtime failures without making a paid provider request."""
@@ -1082,6 +1118,10 @@ class Session:
             pcm = np.frombuffer(candidate, dtype=np.int16)
             if not vosk_wake(pcm):
                 log.info("candidato parlato scartato dal gate Vosk locale")
+                self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
+                return False
+            if WAKE_CONFIRM and not confirm_candidate(pcm):
+                log.info("candidato scartato dal secondo gate locale")
                 self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
                 return False
         if time.time() - self.last_tts < ECHO_MUTE_S:

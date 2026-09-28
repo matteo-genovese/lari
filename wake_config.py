@@ -10,6 +10,7 @@ observed ASR mis-renderings of the default, kept as calibration data.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
@@ -47,6 +48,19 @@ def normalize(text: str) -> str:
     """Lowercase, strip edge punctuation, collapse spaces."""
     cleaned = re.sub(r"^[\s,.!?:;\"'’”»(\[]+|[\s,.!?:;\"'’”»)\]]+$", "", text.strip())
     return re.sub(r"\s+", " ", cleaned.lower())
+
+
+def _strip_accents(word: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", word.lower())
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+def _real_words(text: str) -> list[str]:
+    """Words with at least three letters: \"uh\", \"sì\" do not count as speech."""
+    return [w for w in re.findall(r"[A-Za-zÀ-ÿ']+", text)
+            if sum(c.isalpha() for c in w) >= 3]
 
 
 def default_phrase(language: str) -> str:
@@ -127,6 +141,8 @@ class WakeConfig:
     command_re: re.Pattern
     loose_re: re.Pattern
     cleanup_re: re.Pattern
+    mention_re: re.Pattern
+    doubt_starters: tuple[str, ...] = ()
     junk_words: tuple[str, ...] = field(default=())
 
     def command(self, text: str) -> str | None:
@@ -139,6 +155,24 @@ class WakeConfig:
     def strip_junk(self, text: str) -> str:
         """Remove up to two leading junk renderings of the wake from a transcript."""
         return self.cleanup_re.sub("", text, count=1)
+
+    def confidently_clean(self, text: str) -> bool:
+        """True only when the transcript is clearly speech about something else.
+
+        Doubt always keeps the benefit of the doubt: uncountable speech, any
+        wake mention (even mid-sentence) and any wake-like first word make the
+        transcript not clean.
+        """
+        if len(_real_words(text)) < 2:
+            return False
+        if self.mention_re.search(text):
+            return False
+        words = re.findall(r"[A-Za-zÀ-ÿ']+", text)
+        return bool(words) and _strip_accents(words[0]) not in self.doubt_starters
+
+    def confirmed_absent(self, *transcripts: str) -> bool:
+        """Veto only when every recognizer confidently shows non-wake speech."""
+        return bool(transcripts) and all(self.confidently_clean(t) for t in transcripts)
 
 
 def build_wake_config(phrase: str, aliases: Iterable[str] = (),
@@ -190,6 +224,20 @@ def build_wake_config(phrase: str, aliases: Iterable[str] = (),
         re.IGNORECASE,
     )
 
+    # Unanchored tolerant mention matcher: any wake-like rendering, even
+    # mid-sentence or without its interjection, blocks a second-gate veto.
+    mention_re = re.compile(
+        r"(?:^|[\s,.!?;:\-])(?:%s|%s|%s)" % (
+            "|".join(_phrase_pattern(a) for a in aliases) or _phrase_pattern(phrase),
+            _phrase_pattern(phrase),
+            _token_pattern(core),
+        ),
+        re.IGNORECASE,
+    )
+    doubt_starters = _ordered_unique(
+        _strip_accents(w) for w in (*INTERJECTIONS, *junk_words)
+    )
+
     keyterms = _ordered_unique([display, twin_display, core_display])
     batch_keyterms = _ordered_unique([*keyterms, *vocab])
     realtime_keyterms = tuple(t for t in batch_keyterms if len(t) <= 20)
@@ -219,6 +267,8 @@ def build_wake_config(phrase: str, aliases: Iterable[str] = (),
         command_re=command_re,
         loose_re=loose_re,
         cleanup_re=cleanup_re,
+        mention_re=mention_re,
+        doubt_starters=doubt_starters,
         junk_words=junk_words,
     )
 

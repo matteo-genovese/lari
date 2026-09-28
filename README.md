@@ -55,6 +55,7 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 - `BUDDY_VOSK_MODEL_DIR`: extracted Vosk model directory; must contain `am/final.mdl`.
 - `BUDDY_WAKE_PHRASE`: the wake phrase; command regex, Vosk grammar, junk cleanup and keyterms all derive from it (default `ehi lari`/`hey lari` by `BUDDY_STT_LANG`).
 - `BUDDY_WAKE_ALIASES`: comma-separated extra accepted renderings (observed ASR variants); extends matching, grammar and cleanup.
+- `BUDDY_WAKE_CONFIRM`: second local gate before the paid provider opens (default on). It vetoes only a confident mismatch — both local recognizers clearly transcribing non-wake speech — and passes every doubt, so an ASR mishearing never kills a real wake. The slow local model runs only on the veto path, never on real wakes. Set `0` to disable if a real wake is ever lost; add the lost rendering to `BUDDY_WAKE_ALIASES` instead when possible.
 - `BUDDY_STT_KEYTERMS`: comma-separated vocabulary (names, places) biased in cloud STT; the realtime path drops terms longer than 20 characters.
 - `BUDDY_WAKE_RE`: full command-regex override for advanced calibration.
 - `BUDDY_REALTIME_DAILY_SECONDS`: local limit on seconds sent to Realtime, **not** a hard account spending limit.
