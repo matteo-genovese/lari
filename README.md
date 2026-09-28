@@ -6,7 +6,13 @@
 
 **Lari** is a self-hosted voice bridge for [Hermes](https://github.com/NousResearch/hermes-agent). A phone browser acts as a microphone and speaker; Hermes remains the assistant brain. Each satellite is a **Lare**, represented by the five-state flame mascot. A dedicated hardware satellite is future work.
 
-> **Wake phrase:** one setting drives the whole pipeline. `BUDDY_WAKE_PHRASE` (default `ehi lari`, or `hey lari` for a non-Italian `BUDDY_STT_LANG`) rebuilds the command regex, the Vosk wake grammar, the junk cleanup and the provider keyterms automatically. The runtime keeps the legacy `BUDDY_*` names. A new phrase still deserves real-voice calibration: replay real recordings through the gate and add the observed ASR variants to `BUDDY_WAKE_ALIASES`.
+> **Wake phrase:** one setting drives the whole pipeline. `BUDDY_WAKE_PHRASE` (default `ehi lari`, or `hey lari` for a non-Italian `BUDDY_STT_LANG`) rebuilds the command regex, the Vosk wake grammar, the junk cleanup and the provider keyterms automatically. The runtime keeps the legacy `BUDDY_*` names so live deployments need no env changes on upgrade. Test fixtures are synthetic: real-voice calibration data is per-installation and never committed. A new phrase still deserves real-voice calibration: replay real recordings through the gate and add the observed ASR variants to `BUDDY_WAKE_ALIASES`.
+
+## The name
+
+Roman households kept Lares (Latin singular Lar; Italian Lare, plural Lari): the spirits who watched over the hearth and the family — every home had its own. The project is named Lari after them. Each satellite is a Lare — the device's proper name: a small hearth-spirit in flame form that keeps you company and answers when you call.
+
+In the project artwork the Lare rides on the shoulder of Hermes — the satellite and its brain.
 
 ## How it works
 
@@ -54,6 +60,7 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 - `BUDDY_HERMES_ROOT`: Hermes source tree; defaults to `~/.hermes/hermes-agent`.
 - `BUDDY_AGENT_BACKEND`: set `hermes` for the full agent and tools.
 - `BUDDY_HERMES_PROVIDER`, `BUDDY_HERMES_MODEL`: per-satellite agent model without changing Telegram's model.
+- `BUDDY_SESSION_KEY`: the Hermes conversational session name (default `desk-buddy`); renaming it loses the accumulated conversational memory, so change it only if you want to start from zero.
 - `BUDDY_STT_BACKEND`: `whisper` (local), `vosk`, `elevenlabs_realtime` or other configured backend.
 - `BUDDY_STT_MODEL`, `BUDDY_STT_LANG`: local fallback model and language.
 - `BUDDY_VOSK_MODEL_DIR`: extracted Vosk model directory; must contain `am/final.mdl`.
@@ -66,7 +73,7 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 
 See `.env.example` for a minimal, nonsecret template. The UI brand is independent of the voice identity. Avoid putting installation-specific private URLs, recordings or downloaded models into repository files.
 
-## Install & usage
+## PWA & usage reporting
 
 Add the page to your home screen (PWA): the manifest and service worker make it open fullscreen and keep the shell available offline, so a closed connection shows as disconnected instead of a blank tab. The monthly usage report is served at `/<token>/usage` (turns, paid realtime seconds, local turns) and summarized in the UI; set `BUDDY_USAGE_EUR_PER_MIN` in your private environment to attach a cost estimate from your own provider rate — no price is ever hardcoded.
 
@@ -79,8 +86,10 @@ Add the page to your home screen (PWA): the manifest and service worker make it 
 
 ```bash
 .venv/bin/python -m unittest discover -q
-.venv/bin/python -m py_compile server.py stt_backends.py
+.venv/bin/python -m py_compile server.py stt_backends.py wake_config.py
 ```
+
+`bench_wake_gate.py` is the second gate's A/B benchmark: it replays real recordings through the candidate gate and the veto and reports the three decision numbers (false negatives on real wakes, added latency, candidate seconds kept away from the paid provider).
 
 A green unit suite is not an on-phone wake test: validate wake → transcription → Hermes → audible TTS on the actual device before changing the wake configuration.
 
