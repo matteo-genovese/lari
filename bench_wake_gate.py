@@ -7,7 +7,7 @@ clips, added latency on candidates, and candidate seconds a veto would keep
 away from the paid provider.  Private recordings stay outside the repository.
 
 Usage:
-    BUDDY_WAKE_PHRASE='hey nic' .venv/bin/python bench_wake_gate.py <wav...>
+    BUDDY_WAKE_PHRASE='ehi lari' .venv/bin/python bench_wake_gate.py <wav...>
 """
 import sys
 import time
