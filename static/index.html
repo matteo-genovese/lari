@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d12">
+<title>Lari — Lare</title>
+<style>
+  :root{
+    --bg:#010000; --panel:#12151d; --line:#1e2330;
+    --txt:#e8ecf4; --dim:#7b8496; --accent:#5ad1a5; --warn:#e0a458; --err:#e06c75;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{height:100%; margin:0}
+  body{
+    background:var(--bg); color:var(--txt);
+    font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; align-items:center;
+    padding:calc(env(safe-area-inset-top) + 18px) 16px calc(env(safe-area-inset-bottom) + 18px);
+    user-select:none; -webkit-user-select:none;
+  }
+  header{width:100%; max-width:520px; display:flex; justify-content:space-between; align-items:center}
+  h1{font-size:15px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:0}
+  .conn{font-size:12px; color:var(--dim); display:flex; gap:6px; align-items:center}
+  .dot{width:8px; height:8px; border-radius:50%; background:var(--err); display:inline-block}
+  .dot.on{background:var(--accent)}
+
+  .stage{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:26px; width:100%}
+  .orb{
+    width:200px; height:253px; flex:none; position:relative; overflow:visible;
+    display:flex; align-items:center; justify-content:center;
+    background:transparent; border:0; border-radius:0; box-shadow:none;
+  }
+  .lare-sprite{
+    position:absolute; inset:0;
+    background-image:url("assets/lare-concept.svg"); background-repeat:no-repeat;
+    background-size:571.6% 150.9%; background-position:2% 37%;
+    transform-origin:center 70%; will-change:transform,filter;
+  }
+  .orb .label{position:absolute; z-index:1; bottom:-18px; width:100%; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:rgba(232,236,244,.82); text-align:center; padding:0 12px}
+  .orb.lare_idle .lare-sprite{background-position:2% 37%; animation:lare_idle_breathe 4s ease-in-out infinite}
+  .orb.lare_listening .lare-sprite,.orb.lare_waking .lare-sprite,.orb.lare_recording .lare-sprite{background-position:26% 37%; animation:lare_listen_flicker 1.8s ease-in-out infinite}
+  .orb.lare_transcribing .lare-sprite,.orb.lare_thinking .lare-sprite{background-position:50% 37%; animation:lare_think_bob 2.1s ease-in-out infinite}
+  .orb.lare_speaking .lare-sprite{background-position:74% 37%; animation:lare_speak_pulse .72s ease-in-out infinite}
+  .orb.lare_error .lare-sprite{background-position:98% 37%; animation:lare_error_settle .6s ease-out both}
+  @keyframes lare_idle_breathe{0%,100%{transform:translateY(2px) scale(.98)}50%{transform:translateY(-2px) scale(1.02)}}
+  @keyframes lare_listen_flicker{0%,100%{transform:scale(1)}50%{transform:translateY(-2px) scale(1.035)}}
+  @keyframes lare_think_bob{0%,100%{transform:translateY(2px)}50%{transform:translateY(-3px)}}
+  @keyframes lare_speak_pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.035) translateY(-1px)}}
+  @keyframes lare_error_settle{0%{transform:translateY(-5px);opacity:.65}100%{transform:translateY(2px);opacity:1}}
+
+  .meter{width:190px; height:6px; border-radius:4px; background:var(--panel); overflow:hidden; border:1px solid var(--line)}
+  .meter i{display:block; height:100%; width:0%; background:var(--accent); transition:width .1s linear}
+
+  .log{width:100%; max-width:520px; max-height:34vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px 12px}
+  .log:empty::before{content:attr(data-empty-text); color:var(--dim); font-size:13px}
+  .turn{padding:7px 0; border-bottom:1px solid var(--line); font-size:14.5px}
+  .turn:last-child{border-bottom:0}
+  .who{font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); margin-bottom:2px}
+  .who.me{color:var(--accent)}
+  .err-line{color:var(--err); font-size:13px}
+
+  .cta{width:100%; max-width:520px; display:flex; flex-direction:column; gap:10px}
+  button{
+    width:100%; padding:17px; border-radius:14px; border:1px solid var(--line);
+    background:var(--accent); color:#06120d; font-size:16px; font-weight:700; cursor:pointer;
+  }
+  button.ghost{background:transparent; color:var(--dim); font-weight:500; border-color:var(--line)}
+  button:active{transform:scale(.99)}
+  .hint{font-size:12.5px; color:var(--dim); text-align:center}
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="deviceName">Lare</h1>
+    <div class="conn"><span class="dot" id="dot"></span><span id="connTxt">disconnesso</span></div>
+  </header>
+
+  <div class="stage">
+    <div class="orb idle lare_idle" id="orb" role="img" aria-label="Lare"><div class="lare-sprite" aria-hidden="true"></div><div class="label" id="label">in attesa</div></div>
+    <div class="meter"><i id="meterBar"></i></div>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <div class="cta" style="margin-top:14px">
+    <button id="startBtn">Avvia ascolto</button>
+    <button id="stopBtn" class="ghost hidden">Ferma</button>
+    <button id="interruptBtn" class="ghost hidden">Interrompi risposta</button>
+    <div class="hint" id="hint">Avvia l'ascolto per caricare le impostazioni del Lare.</div>
+  </div>
+
+<script>
+(() => {
+  const TOKEN = location.pathname.split("/")[1] || "";
+  const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/${TOKEN}/ws`;
+
+  const $ = id => document.getElementById(id);
+  const orb = $("orb"), label = $("label"), log = $("log"), dot = $("dot"), connTxt = $("connTxt");
+  const startBtn = $("startBtn"), stopBtn = $("stopBtn"), interruptBtn = $("interruptBtn");
+  const meterBar = $("meterBar"), hint = $("hint");
+
+  let ws = null, ctx = null, stream = null, processor = null, source = null;
+  let running = false, wakeLock = null;
+  let partialTurn = null, partialNode = null;
+  let playing = false;
+  let reconnectTries = 0, reconnectTimer = null;
+  let speakingTurn = null, lastPlaybackTurn = null;
+  let interruptPendingTurn = null;
+
+  let locale = "it", wakePhrase = "";
+  const copy = {
+    it: {
+      states:{listening:"ascolto", waking:"ti ho sentito", recording:"parla", transcribing:"trascrivo", thinking:"penso", speaking:"rispondo", idle:"in attesa", error:"errore"},
+      empty:"Nessuna conversazione.", disconnected:"disconnesso", connected:"connesso", start:"Avvia ascolto", stop:"Ferma", interrupt:"Interrompi risposta",
+      initialHint: phrase => phrase ? `Dimmi «${phrase}» per parlare. Tieni lo schermo acceso e il telefono in carica.` : "Avvia l'ascolto per caricare le impostazioni del Lare.",
+      readyHint: phrase => phrase ? `In ascolto. Di' «${phrase}».` : "Ascolto attivo.",
+      interruptHint:"Dimmi cosa aggiungere o chiedi una sintesi.",
+      followup: seconds => `Puoi continuare senza wake word per ${seconds} secondi.`,
+      user:"tu", assistant:"Lare", partial:"tu · in corso", retry:"Connessione persa, riprovo…",
+      micError:"Microfono non disponibile: ", secureOrigin:"Serve HTTPS o un'origine autorizzata per il microfono.",
+      playbackError:"Riproduzione della risposta fallita.", browserPlaybackError:"Il browser ha rifiutato la riproduzione audio.",
+      rawMode:"Modalità grezza attiva (niente cancellazione eco).", connectionError:"Connessione al bridge rifiutata (ricarica la pagina)."
+    },
+    en: {
+      states:{listening:"listening", waking:"heard you", recording:"speak", transcribing:"transcribing", thinking:"thinking", speaking:"speaking", idle:"idle", error:"error"},
+      empty:"No conversation yet.", disconnected:"disconnected", connected:"connected", start:"Start listening", stop:"Stop", interrupt:"Interrupt response",
+      initialHint: phrase => phrase ? `Say “${phrase}” to speak. Keep the screen on and the phone charged.` : "Start listening to load the Lare settings.",
+      readyHint: phrase => phrase ? `Listening. Say “${phrase}”.` : "Listening is active.",
+      interruptHint:"Tell me what to add or ask for a summary.",
+      followup: seconds => `You can continue without the wake phrase for ${seconds} seconds.`,
+      user:"you", assistant:"Lare", partial:"you · live", retry:"Connection lost; retrying…",
+      micError:"Microphone unavailable: ", secureOrigin:"HTTPS or an authorized origin is required for microphone access.",
+      playbackError:"Response playback failed.", browserPlaybackError:"The browser blocked audio playback.",
+      rawMode:"Raw audio mode enabled (echo cancellation off).", connectionError:"Bridge connection failed (reload the page)."
+    }
+  };
+  const tr = key => copy[locale][key];
+  function configureApp(config){
+    locale = config.language === "en" ? "en" : "it";
+    wakePhrase = config.phrase || "";
+    document.documentElement.lang = locale;
+    document.title = `Lari — ${config.device || "Lare"}`;
+    $("deviceName").textContent = config.device || "Lare";
+    orb.setAttribute("aria-label", config.device || "Lare");
+    log.dataset.emptyText = tr("empty");
+    startBtn.textContent = tr("start");
+    stopBtn.textContent = tr("stop");
+    interruptBtn.textContent = tr("interrupt");
+    hint.textContent = tr("initialHint")(wakePhrase);
+    setConn(Boolean(ws && ws.readyState === WebSocket.OPEN));
+  }
+  log.dataset.emptyText = tr("empty");
+
+  const playback = {
+    mode: null, turn: null, nextSeq: 0, awaiting: null, queue: [],
+    active: null, activeUrl: null, ended: false, completionScheduled: false,
+    releaseTimer: null, generation: 0
+  };
+  function setState(s){
+    const state = s || "idle";
+    orb.className = `orb ${state} lare_${state}`;
+    label.textContent = stateLabels()[s] || s || "—";
+  }
+  function line(who, text, cls){
+    const d = document.createElement("div");
+    d.className = "turn";
+    d.innerHTML = `<div class="who ${who==="me"?"me":""}">${who==="me"?tr("user"):tr("assistant")}</div><div class="${cls||""}"></div>`;
+    d.lastChild.textContent = text;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+  function partial(text, turn){
+    if (partialTurn !== turn){
+      partialTurn = turn;
+      partialNode = null;
+    }
+    if (!partialNode){
+      partialNode = document.createElement("div");
+      partialNode.className = "turn";
+      partialNode.innerHTML = `<div class="who me">${tr("partial")}</div><div></div>`;
+      log.appendChild(partialNode);
+    }
+    partialNode.lastChild.textContent = text;
+    log.scrollTop = log.scrollHeight;
+  }
+  function clearPartial(){
+    if (partialNode){ partialNode.remove(); }
+    partialTurn = null;
+    partialNode = null;
+  }
+  function setConn(on){
+    dot.className = "dot" + (on ? " on" : "");
+    connTxt.textContent = on ? tr("connected") : tr("disconnected");
+  }
+
+  function hasTurn(turn){ return turn !== undefined && turn !== null; }
+  function sameTurn(a, b){ return hasTurn(a) && hasTurn(b) && String(a) === String(b); }
+  function staleTurn(turn){
+    if (!hasTurn(turn) || !hasTurn(lastPlaybackTurn)) return false;
+    const current = Number(turn), previous = Number(lastPlaybackTurn);
+    return Number.isFinite(current) && Number.isFinite(previous)
+      ? current <= previous
+      : sameTurn(turn, lastPlaybackTurn);
+  }
+  function sendJson(data){
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(data));
+  }
+  function showInterrupt(show){ interruptBtn.classList.toggle("hidden", !show); }
+  function clearReleaseTimer(){
+    if (playback.releaseTimer){ clearTimeout(playback.releaseTimer); playback.releaseTimer = null; }
+  }
+  function revokeActiveUrl(){
+    if (playback.activeUrl){ URL.revokeObjectURL(playback.activeUrl); playback.activeUrl = null; }
+  }
+  function disposeActiveAudio(){
+    const audio = playback.active;
+    playback.active = null;
+    if (!audio) { revokeActiveUrl(); return; }
+    audio.onended = null;
+    audio.onerror = null;
+    try { audio.pause(); } catch(e){}
+    try { audio.removeAttribute("src"); audio.load(); } catch(e){}
+    revokeActiveUrl();
+  }
+  function resetPlayback(releaseMic){
+    clearReleaseTimer();
+    playback.generation++;
+    disposeActiveAudio();
+    playback.mode = null;
+    playback.turn = null;
+    playback.nextSeq = 0;
+    playback.awaiting = null;
+    playback.queue.length = 0;
+    playback.ended = false;
+    playback.completionScheduled = false;
+    showInterrupt(false);
+    if (releaseMic){
+      playing = false;
+      interruptPendingTurn = null;
+    }
+  }
+  function rejectProtocol(message){
+    hint.textContent = message;
+  }
+  function markSpeaking(turn){
+    if (hasTurn(turn)){
+      if (staleTurn(turn) || (hasTurn(playback.turn) && !sameTurn(turn, playback.turn))){
+        rejectProtocol("Risposta audio obsoleta ignorata.");
+        return false;
+      }
+      speakingTurn = turn;
+    }
+    clearReleaseTimer();
+    playing = true;
+    showInterrupt(true);
+    setState("speaking");
+    return true;
+  }
+  function finishPlayback(status, errorText){
+    if (!playback.mode || playback.completionScheduled) return;
+    const turn = playback.turn;
+    playback.completionScheduled = true;
+    if (status === "failed"){
+      resetPlayback(true);
+      lastPlaybackTurn = turn;
+      sendJson({type:"playback_done", turn, status:"failed"});
+      setState("error");
+      line("hermes", errorText || "Riproduzione audio fallita.", "err-line");
+      hint.textContent = "Riproduzione della risposta fallita.";
+      return;
+    }
+    const generation = playback.generation;
+    clearReleaseTimer();
+    playback.releaseTimer = setTimeout(() => {
+      if (playback.generation !== generation) return;
+      playback.releaseTimer = null;
+      playing = false;
+      lastPlaybackTurn = turn;
+      sendJson({type:"playback_done", turn, status:"completed"});
+      resetPlayback(false);
+      speakingTurn = null;
+      if (running) setState("listening");
+    }, 700);
+  }
+  function maybeFinishPlayback(){
+    if (!playback.mode || playback.awaiting || playback.active || playback.queue.length) return;
+    if (playback.mode === "segmented" && !playback.ended) return;
+    finishPlayback("completed");
+  }
+  function failPlayback(message, generation){
+    if (generation !== undefined && generation !== playback.generation) return;
+    finishPlayback("failed", message);
+  }
+  function releaseInterruptedPlayback(delayMs){
+    clearReleaseTimer();
+    const generation = playback.generation;
+    playback.releaseTimer = setTimeout(() => {
+      if (playback.generation !== generation) return;
+      playback.releaseTimer = null;
+      playing = false;
+      speakingTurn = null;
+      if (running) setState("listening");
+    }, Math.max(700, Number(delayMs) || 0));
+  }
+  function handleInterruptAck(msg, rejected){
+    if (!sameTurn(msg.turn, interruptPendingTurn)){
+      rejectProtocol("Conferma interruzione obsoleta ignorata.");
+      return;
+    }
+    interruptPendingTurn = null;
+    // The server has stopped producing audio. Keep capture muted through the
+    // advertised speaker tail before returning the UI to listening.
+    releaseInterruptedPlayback(rejected ? 700 : msg.echo_tail_ms);
+  }
+  function playNextAudio(){
+    if (playback.active || !playback.queue.length || playback.completionScheduled) return;
+    const data = playback.queue.shift();
+    const generation = playback.generation;
+    const blob = new Blob([data], {type:"audio/mpeg"});
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    playback.active = audio;
+    playback.activeUrl = url;
+    playing = true;
+    audio.onended = () => {
+      if (generation !== playback.generation || playback.active !== audio) return;
+      playback.active = null;
+      audio.onended = null;
+      audio.onerror = null;
+      try { audio.removeAttribute("src"); audio.load(); } catch(e){}
+      URL.revokeObjectURL(url);
+      playback.activeUrl = null;
+      playNextAudio();
+      maybeFinishPlayback();
+    };
+    audio.onerror = () => failPlayback("Riproduzione della risposta fallita.", generation);
+    try {
+      const result = audio.play();
+      if (result && typeof result.catch === "function"){
+        result.catch(() => failPlayback("Il browser ha rifiutato la riproduzione audio.", generation));
+      }
+    } catch(e){
+      failPlayback("Il browser ha rifiutato la riproduzione audio.", generation);
+    }
+  }
+  function handleBinaryFrame(data){
+    const pending = playback.awaiting;
+    const turnsMatch = sameTurn(pending && pending.turn, playback.turn) ||
+      (pending && pending.mode === "legacy" && !hasTurn(pending.turn) && !hasTurn(playback.turn));
+    if (!pending || !playback.mode || !turnsMatch){
+      rejectProtocol("Pacchetto audio obsoleto ignorato.");
+      return;
+    }
+    playback.awaiting = null;
+    playback.queue.push(data);
+    if (pending.mode === "segmented") playback.nextSeq++;
+    playNextAudio();
+  }
+  function handleAudioStart(msg){
+    if (!hasTurn(msg.turn) || staleTurn(msg.turn) || playback.mode){
+      rejectProtocol("Inizio risposta audio non valido o obsoleto.");
+      return;
+    }
+    if (hasTurn(speakingTurn) && !sameTurn(msg.turn, speakingTurn)){
+      rejectProtocol("Turno audio inatteso ignorato.");
+      return;
+    }
+    playback.mode = "segmented";
+    playback.turn = msg.turn;
+    playback.nextSeq = 0;
+    playback.ended = false;
+    playback.completionScheduled = false;
+    markSpeaking(msg.turn);
+  }
+  function handleAudioChunk(msg){
+    const seq = Number(msg.seq);
+    if (playback.mode !== "segmented" || !sameTurn(msg.turn, playback.turn) ||
+        !Number.isInteger(seq) || seq !== playback.nextSeq || playback.awaiting){
+      rejectProtocol("Segmento audio fuori sequenza ignorato.");
+      return;
+    }
+    playback.awaiting = {mode:"segmented", turn:msg.turn, seq};
+  }
+  function handleAudioEnd(msg){
+    if (playback.mode !== "segmented" || !sameTurn(msg.turn, playback.turn) || playback.awaiting){
+      rejectProtocol("Fine risposta audio inattesa ignorata.");
+      return;
+    }
+    playback.ended = true;
+    maybeFinishPlayback();
+  }
+  function handleLegacyAudio(msg){
+    const turn = hasTurn(msg.turn) ? msg.turn : speakingTurn;
+    if (playback.mode && playback.mode !== "legacy"){
+      rejectProtocol("Audio legacy ignorato durante una risposta segmentata.");
+      return;
+    }
+    if (hasTurn(turn) && staleTurn(turn)){
+      rejectProtocol("Audio legacy obsoleto ignorato.");
+      return;
+    }
+    if (!playback.mode){
+      playback.mode = "legacy";
+      playback.turn = turn;
+      playback.completionScheduled = false;
+    } else if (playback.awaiting || playback.completionScheduled || playback.releaseTimer){
+      rejectProtocol("Audio legacy fuori sequenza ignorato.");
+      return;
+    }
+    playback.awaiting = {mode:"legacy", turn:playback.turn};
+    markSpeaking(playback.turn);
+  }
+  function handleJsonFrame(raw){
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    if (!msg || typeof msg.type !== "string") return;
+    if (playback.awaiting){
+      rejectProtocol("Risposta audio non valida: atteso un pacchetto binario.");
+      failPlayback("Il server ha interrotto la sequenza audio.");
+      return;
+    }
+    switch (msg.type){
+      case "state":
+        if (msg.language) configureApp(msg);
+        if (msg.state === "speaking"){
+          markSpeaking(msg.turn);
+        } else if (msg.state === "listening" && playback.mode){
+          setState("speaking");
+        } else {
+          setState(msg.state);
+        }
+        break;
+      case "partial_transcript": partial(msg.text, msg.turn); break;
+      case "transcript": clearPartial(); line("me", msg.text); break;
+      case "reply": line("hermes", msg.text); break;
+      case "audio_start": handleAudioStart(msg); break;
+      case "audio_chunk": handleAudioChunk(msg); break;
+      case "audio_end": handleAudioEnd(msg); break;
+      case "audio": handleLegacyAudio(msg); break;
+      case "fatal":
+        if (playback.mode) failPlayback("Errore audio: " + (msg.error || "errore fatale"));
+        setState("error"); line("hermes", "Errore fatale: " + msg.error, "err-line");
+        break;
+      case "interrupt_ack": handleInterruptAck(msg, false); break;
+      case "interrupt_rejected": handleInterruptAck(msg, true); break;
+      case "followup":
+        hint.textContent = msg.interrupted
+          ? tr("interruptHint")
+          : tr("followup")(msg.seconds);
+        break;
+      case "pong": break;
+    }
+  }
+
+  // —— capture: mic -> PCM 16k mono int16 ——
+  async function startMic(){
+    // ?raw=1 -> microfono grezzo: niente cancellazione eco/NS. Spesso il
+    // processing del telefono rende la voce inintelligibile per gli ASR.
+    const raw = new URLSearchParams(location.search).get("raw") === "1";
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: raw
+        ? { echoCancellation:false, noiseSuppression:false, autoGainControl:true, channelCount:1 }
+        : { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 }
+    });
+    if (raw) hint.textContent = "Modalità grezza attiva (niente cancellazione eco).";
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") { try { await ctx.resume(); } catch(e){} }
+    source = ctx.createMediaStreamSource(stream);
+    processor = ctx.createScriptProcessor(4096, 1, 1);
+    source.connect(processor);
+    processor.connect(ctx.destination); // necessario per far girare lo ScriptProcessor
+    processor.onaudioprocess = e => {
+      window.__frames = (window.__frames || 0) + 1;
+      if (!running || !ws || ws.readyState !== 1) return;
+      if (playing) return;   // non inviare l'eco della nostra stessa risposta
+      const inp = e.inputBuffer.getChannelData(0);
+      const out = downsample(inp, ctx.sampleRate, 16000);
+      meterBar.style.width = Math.min(100, peak(out) * 260) + "%";
+      ws.send(out.buffer);
+    };
+  }
+  function downsample(buf, from, to){
+    const ratio = from / to;
+    const len = Math.floor(buf.length / ratio);
+    const out = new Int16Array(len);
+    for (let i = 0; i < len; i++){
+      const j = i * ratio;
+      const s = Math.max(-1, Math.min(1, buf[Math.floor(j)]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return out;
+  }
+  function peak(arr){
+    let p = 0;
+    for (let i = 0; i < arr.length; i++){ const v = Math.abs(arr[i]); if (v > p) p = v; }
+    return p / 32768;
+  }
+
+  // —— websocket ——
+  function connect(){
+    clearReleaseTimer();
+    resetPlayback(true);
+    speakingTurn = null;
+    try { if (ws) { ws.onclose = null; ws.close(); } } catch(e){}
+    try {
+      ws = new WebSocket(WS_URL);
+    } catch(err){
+      setConn(false);
+      line("hermes", "Apertura WebSocket fallita: " + err.message, "err-line");
+      if (running) scheduleReconnect();
+      return;
+    }
+    const socket = ws;
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => { if (ws !== socket) return; setConn(true); reconnectTries = 0; setState("listening"); };
+    socket.onclose = () => {
+      if (ws !== socket) return;
+      resetPlayback(true);
+      speakingTurn = null;
+      setConn(false);
+      if (running){
+        setState("listening");                  // non è un errore: stiamo solo riconnettendo
+        hint.textContent = "Connessione persa, riprovo…";
+      } else {
+        setState("error");
+      }
+    };
+    socket.onerror = () => {
+      if (ws !== socket) return;
+      setConn(false);
+      line("hermes", "Errore WebSocket: connessione al bridge rifiutata (ricarica la pagina)", "err-line");
+    };
+    socket.onmessage = ev => {
+      if (ws !== socket) return;
+      if (typeof ev.data === "string"){
+        handleJsonFrame(ev.data);
+      } else if (ev.data instanceof ArrayBuffer ||
+                 (typeof Blob !== "undefined" && ev.data instanceof Blob)){
+        handleBinaryFrame(ev.data);
+      } else {
+        rejectProtocol("Formato audio non supportato ignorato.");
+      }
+    };
+  }
+  function scheduleReconnect(){
+    clearTimeout(reconnectTimer);
+    reconnectTries++;
+    reconnectTimer = setTimeout(connect, Math.min(15000, 1000 * reconnectTries));
+  }
+  function interruptPlayback(){
+    if (!playing && !playback.mode) return;
+    const turn = hasTurn(playback.turn) ? playback.turn : speakingTurn;
+    if (!hasTurn(turn)) return;
+    resetPlayback(false);
+    lastPlaybackTurn = turn;
+    interruptPendingTurn = turn;
+    sendJson({type:"interrupt", turn});
+    playing = true;
+  }
+
+  // —— wake lock: lo schermo resta acceso ——
+  async function lockScreen(){
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
+    document.addEventListener("visibilitychange", async () => {
+      if (document.visibilityState === "visible" && running && !wakeLock){
+        try { wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
+      }
+    });
+  }
+
+  async function start(){
+    try {
+      await startMic();
+      await lockScreen();
+      running = true;
+      connect();
+      startBtn.classList.add("hidden");
+      stopBtn.classList.remove("hidden");
+      hint.textContent = tr("readyHint")(wakePhrase);
+      setState("listening");
+      keepalive = setInterval(() => {
+        if (!ws || ws.readyState !== 1) return;
+        ws.send(JSON.stringify({type:"ping"}));
+        ws.send(JSON.stringify({
+          type:"diag",
+          ctx: ctx ? ctx.state : "none",
+          rate: ctx ? ctx.sampleRate : 0,
+          mic: stream ? stream.getAudioTracks().map(t => t.readyState + ":" + t.enabled).join(",") : "none",
+          frames: window.__frames || 0,
+          vis: document.visibilityState,
+          raw: new URLSearchParams(location.search).get("raw") === "1",
+        }));
+      }, 5000);
+    } catch(err){
+      setState("error");
+      line("hermes", "Microfono non disponibile: " + err.message, "err-line");
+      hint.textContent = "Serve HTTPS o l'origine autorizzata (chrome://flags).";
+    }
+  }
+  function stop(){
+    running = false;
+    clearInterval(keepalive);
+    clearTimeout(reconnectTimer);
+    resetPlayback(true);
+    speakingTurn = null;
+    try { processor && processor.disconnect(); source && source.disconnect(); } catch(e){}
+    stream && stream.getTracks().forEach(t => t.stop());
+    ctx && ctx.close();
+    ws && ws.close();
+    setConn(false); setState("idle");
+    startBtn.classList.remove("hidden");
+    stopBtn.classList.add("hidden");
+    hint.textContent = tr("initialHint")(wakePhrase);
+  }
+  let keepalive = null;
+
+  startBtn.onclick = start;
+  stopBtn.onclick = stop;
+  interruptBtn.onclick = interruptPlayback;
+  document.addEventListener("click", () => { if (ctx && ctx.state === "suspended") ctx.resume(); }, {once:false});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Local secrets and access tokens
+.env
+.env.*
+!.env.example
+.token
+*.token
+
+# Runtime logs, usage ledgers and diagnostic recordings
+*.log
+*.wav
+.realtime_stt_usage.json*
+calibration/
+
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Downloaded models and generated knowledge graph output
+models/
+graphify-out/
+
+# Local OS/editor artifacts
+.DS_Store
