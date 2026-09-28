@@ -11,7 +11,7 @@ Phone browser ── 16 kHz PCM via WebSocket ──► local wake gate → VAD 
 Phone speaker ◄──── segmented edge-tts audio ◄──── Hermes API (same conversation)
 ```
 
-The browser displays **idle, listening, thinking, speaking and error** using individually cropped SVG assets; there are no concept-sheet frames. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge does not open a provider connection until the local wake gate confirms the utterance.
+The browser displays **idle, listening, thinking, speaking and error** using individually cropped SVG assets; there are no concept-sheet frames. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge does not open a provider connection until the local wake gate confirms the utterance.
 
 ## Quick start
 

@@ -25,7 +25,7 @@
   .dot{width:8px; height:8px; border-radius:50%; background:var(--err); display:inline-block}
   .dot.on{background:var(--accent)}
 
-  .stage{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:26px; width:100%}
+  .stage{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; width:100%}
   .orb{
     width:200px; height:253px; flex:none; position:relative;
     display:flex; align-items:center; justify-content:center;
@@ -45,6 +45,10 @@
 
   .meter{width:190px; height:6px; border-radius:4px; background:var(--panel); overflow:hidden; border:1px solid var(--line)}
   .meter i{display:block; height:100%; width:0%; background:var(--accent); transition:width .1s linear}
+  .usage{max-width:min(100%,360px); min-height:36px; padding:8px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--dim); text-align:center; font-size:11px; letter-spacing:.04em; line-height:1.4}
+  .usage.local{color:var(--accent); border-color:#265a48}
+  .usage.followup,.usage.pending{color:var(--warn); border-color:#635030}
+  .usage.paid{color:#fff; border-color:var(--err); background:#4b2026}
 
   .log{width:100%; max-width:520px; max-height:34vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px 12px}
   .log:empty::before{content:"Nessuna conversazione."; color:var(--dim); font-size:13px}
@@ -74,6 +78,7 @@
   <div class="stage">
     <div class="orb idle" id="orb" role="img" aria-label="Lare"><div class="lare-sprite" aria-hidden="true"></div><div class="label" id="label">in attesa</div></div>
     <div class="meter"><i id="meterBar"></i></div>
+    <div class="usage" id="usageStatus" role="status" aria-live="polite">DISCONNESSO · nessun audio inviato a ElevenLabs</div>
   </div>
 
   <div class="log" id="log"></div>
@@ -93,10 +98,12 @@
   const $ = id => document.getElementById(id);
   const orb = $("orb"), label = $("label"), log = $("log"), dot = $("dot"), connTxt = $("connTxt");
   const startBtn = $("startBtn"), stopBtn = $("stopBtn"), interruptBtn = $("interruptBtn");
-  const meterBar = $("meterBar"), hint = $("hint");
+  const meterBar = $("meterBar"), hint = $("hint"), usageStatus = $("usageStatus");
 
   let ws = null, ctx = null, stream = null, processor = null, source = null;
   let running = false, wakeLock = null;
+  let connected = false, currentState = "idle", sttMode = null, sttTurn = null;
+  let paidAudioThisTurn = false, followupUntil = 0, turnIsFollowup = false;
   let partialTurn = null, partialNode = null;
   let playing = false;   // mentre risponde, il microfono resta muto (anti-eco)
   let wakePhrase = "";   // supplied by the bridge, never inferred from branding
@@ -113,9 +120,53 @@
     thinking:"penso", speaking:"rispondo", idle:"in attesa", error:"errore"
   };
 
+  function renderUsage(){
+    let tone = "local", text;
+    const remaining = Math.ceil((followupUntil - Date.now()) / 1000);
+    if (followupUntil && remaining <= 0){
+      followupUntil = 0;
+      if (connected && currentState === "listening" && wakePhrase){
+        hint.textContent = `Dimmi «${wakePhrase}» per parlare.`;
+      }
+    }
+    if (!connected){
+      tone = "";
+      text = "DISCONNESSO · nessun audio inviato a ElevenLabs";
+    } else if (["waking", "recording", "transcribing"].includes(currentState)){
+      const phase = turnIsFollowup ? "FOLLOW-UP" : "POST-WAKE";
+      if (sttMode === "realtime"){
+        tone = "paid";
+        text = currentState === "transcribing"
+          ? "ELEVENLABS · trascrizione (audio già inviato)"
+          : "ELEVENLABS · AUDIO INVIATO (crediti)";
+      } else if (sttMode === "local"){
+        text = paidAudioThisTurn
+          ? `${phase} · AUDIO GIÀ INVIATO; ora STT LOCALE (nessun nuovo invio)`
+          : `${phase} · STT LOCALE, nessun invio a ElevenLabs`;
+      } else {
+        tone = "pending";
+        text = `${phase} · STT in avvio, COSTO NON CONFERMATO`;
+      }
+    } else if (currentState === "listening" && remaining > 0){
+      tone = "followup";
+      text = `FOLLOW-UP · LOCALE ora; ElevenLabs se parli (${remaining}s)`;
+    } else if (currentState === "listening"){
+      text = "PRE-WAKE · SOLO LOCALE; ElevenLabs inattivo";
+    } else {
+      tone = "";
+      text = "NESSUN AUDIO in invio a ElevenLabs";
+    }
+    usageStatus.className = "usage " + tone;
+    usageStatus.textContent = text;
+    if (currentState === "listening" && connected){
+      label.textContent = remaining > 0 ? "follow-up" : "ascolto locale";
+    }
+  }
   function setState(s){
+    currentState = s || "idle";
     orb.className = "orb " + (s || "");
     label.textContent = states[s] || s || "—";
+    renderUsage();
   }
   function line(who, text, cls){
     const d = document.createElement("div");
@@ -145,8 +196,11 @@
     partialNode = null;
   }
   function setConn(on){
+    connected = on;
+    if (!on){ followupUntil = 0; sttMode = null; sttTurn = null; paidAudioThisTurn = false; }
     dot.className = "dot" + (on ? " on" : "");
     connTxt.textContent = on ? "connesso" : "disconnesso";
+    renderUsage();
   }
 
   function hasTurn(turn){ return turn !== undefined && turn !== null; }
@@ -380,6 +434,15 @@
     }
     switch (msg.type){
       case "state":
+        if (msg.state === "waking"){
+          followupUntil = 0;
+          sttMode = null;
+          paidAudioThisTurn = false;
+          sttTurn = msg.turn;
+        }
+        if ((msg.state === "waking" || msg.state === "recording") && typeof msg.followup === "boolean"){
+          turnIsFollowup = msg.followup;
+        }
         if (msg.state === "speaking"){
           markSpeaking(msg.turn);
         } else if (msg.state === "listening" && playback.mode){
@@ -390,6 +453,14 @@
         if (msg.phrase){
           wakePhrase = msg.phrase;
           hint.textContent = "Frase di sveglia: «" + wakePhrase + "»";
+        }
+        break;
+      case "stt_status":
+        if (sameTurn(msg.turn, sttTurn) && ["waking", "recording", "transcribing"].includes(currentState)
+            && (msg.mode === "realtime" || msg.mode === "local")){
+          sttMode = msg.mode;
+          if (msg.mode === "realtime") paidAudioThisTurn = true;
+          renderUsage();
         }
         break;
       case "partial_transcript": partial(msg.text, msg.turn); break;
@@ -406,6 +477,8 @@
       case "interrupt_ack": handleInterruptAck(msg, false); break;
       case "interrupt_rejected": handleInterruptAck(msg, true); break;
       case "followup":
+        followupUntil = Date.now() + Math.max(0, Number(msg.seconds) || 0) * 1000;
+        renderUsage();
         hint.textContent = msg.interrupted
           ? "Dimmi cosa aggiungere o chiedi una sintesi senza ripetere la frase di sveglia"
           : `Puoi continuare senza ripetere la frase di sveglia per ${msg.seconds} secondi.`;
@@ -579,6 +652,7 @@
   startBtn.onclick = start;
   stopBtn.onclick = stop;
   interruptBtn.onclick = interruptPlayback;
+  setInterval(renderUsage, 1000);
   document.addEventListener("click", () => { if (ctx && ctx.state === "suspended") ctx.resume(); }, {once:false});
 })();
 </script>

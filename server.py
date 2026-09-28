@@ -1204,7 +1204,7 @@ class Session:
         # La finestra va valutata quando inizia a parlare, NON dopo lo STT:
         # On slow CPUs transcription can take many seconds.
         followup_at_start = time.monotonic() < self.conversation_until and not self.awaiting_playback
-        await self.set_state("waking", turn=turn)
+        await self.set_state("waking", turn=turn, followup=followup_at_start)
         await self._clear_partial(turn)
         # pre-roll: la frase di sveglia è già passata mentre il trigger decidesse,
         # quindi si riparte dagli ultimi 1.5s già presenti nel buffer rotante
@@ -1215,7 +1215,7 @@ class Session:
         # pausa solo se abbiamo appena risposto (eco della TTS)
         if time.time() - self.last_tts < 3.0:
             await asyncio.sleep(0.25)
-        await self.set_state("recording", turn=turn)
+        await self.set_state("recording", turn=turn, followup=followup_at_start)
         realtime = None
         realtime_start_failed = False
         if STT_BACKEND == stt_backends.REALTIME_BACKEND:
@@ -1227,6 +1227,7 @@ class Session:
                 # _transcribe_realtime_or_batch falls back locally; this flag
                 # avoids pretending that a provider connection existed.
                 realtime_start_failed = True
+                await self.send_json({"type": "stt_status", "mode": "local", "turn": turn})
         try:
             pcm = await self._record_utterance(prelude, realtime=realtime)
         except Exception:
@@ -1415,11 +1416,22 @@ class Session:
         started = False
         last_data = time.time()
         t_end_max = time.time() + MAX_UTTERANCE_S
+        reported_stt_mode = None
+
+        async def forward_audio(chunk: bytes):
+            nonlocal reported_stt_mode
+            assert realtime is not None
+            sent = await realtime.send_audio(chunk)
+            mode = "realtime" if sent else "local"
+            if mode != reported_stt_mode:
+                reported_stt_mode = mode
+                await self.send_json({"type": "stt_status", "mode": mode, "turn": self.turn})
+
         if realtime is not None and prelude:
             # The local wake detector fired before recording began. Sending this
             # confirmed pre-roll after opening the provider preserves the wake
             # gate without ever keeping an idle provider connection alive.
-            await realtime.send_audio(prelude)
+            await forward_audio(prelude)
         if prelude:
             # A candidate is already buffered before the recorder starts. Feed
             # it through the same local VAD accounting so a quiet gap at the
@@ -1456,7 +1468,7 @@ class Session:
                 # Realtime STT needs one contiguous stream.  Local VAD still
                 # decides when the turn ends, but must not punch quiet holes in
                 # the audio sent to the provider.
-                await realtime.send_audio(chunk)
+                await forward_audio(chunk)
             rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
             threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
             # il floor deve continuare ad adattarsi anche durante la registrazione,
