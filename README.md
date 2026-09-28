@@ -74,4 +74,4 @@ A green unit suite is not an on-phone wake test: validate wake → transcription
 
 ## License
 
-No license has been selected yet. Public visibility does not grant permission to reuse the code.
+[MIT](LICENSE) © 2026 Matteo Genovese.
