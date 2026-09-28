@@ -8,7 +8,7 @@ import wave
 
 from functools import partial
 
-from lari.server import wake_command as _wake_command, save_turn_audio, Session, resolve_command as _resolve_command
+from lari.server import wake_command as _wake_command, save_turn_audio, Session, resolve_command as _resolve_command, resolve_vosk_command
 from lari.wake_config import build_wake_config
 
 # Parity suite for the tuned live phrase: every observed variant must survive
@@ -53,6 +53,21 @@ class WakeTests(unittest.TestCase):
         self.assertIsNone(resolve_command(phrase, conversation_until=99, now=100))
         self.assertEqual(resolve_command('Hey Lari, che tempo fa?', conversation_until=0, now=100),
                          'che tempo fa?')
+
+    def test_monologue_before_the_wake_is_never_the_command(self):
+        cfg = build_wake_config('hey lari')
+        self.assertEqual(
+            resolve_vosk_command('Bla bla bla bla bla. Ehi Lari, che ore sono?',
+                                 wake=True, followup=False, cfg=cfg),
+            'che ore sono?')
+        self.assertEqual(
+            resolve_vosk_command('Bla bla bla bla bla. Ehi Lari.',
+                                 wake=True, followup=False, cfg=cfg),
+            '')
+        # A wake dropped by free-form ASR still leaves the request intact.
+        self.assertEqual(
+            resolve_vosk_command('che ore sono?', wake=True, followup=False, cfg=cfg),
+            'che ore sono?')
 
     def test_playback_ack_opens_followup_window(self):
         async def sender(_):

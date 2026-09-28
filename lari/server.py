@@ -157,8 +157,9 @@ WAKE_PROVIDER = os.environ.get("BUDDY_WAKE_PROVIDER", "whisper")
 # whisper: any speech starts the recording, then the phrase is searched in the text.
 # sherpa/openwakeword: dedicated hotword engine (English; misses the IT pronunciation).
 # The wake phrase is one setting: command regex, Vosk grammar, junk cleanup and
-# ASR keyterms all derive from it in wake_config.py.  The regex is
-# start-anchored so background mentions ("ho parlato con ...") never trigger.
+# ASR keyterms all derive from it in wake_config.py.  The regex anchors the
+# wake as an address (transcript start or after a sentence boundary) so
+# background mentions ("ho parlato con ...") never trigger.
 WAKE_CONFIG = wake_config.from_env()
 WAKE_RE = WAKE_CONFIG.command_re
 

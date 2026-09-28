@@ -193,8 +193,10 @@ def build_wake_config(phrase: str, aliases: Iterable[str] = (),
     literals = _ordered_unique([twin, phrase, core, *aliases])
     grammar = (*literals, "[unk]")
 
+    # The wake addresses us at the start of the transcript or after a sentence
+    # boundary; a bare mid-sentence mention ("ho parlato con ...") never does.
     command_re = re.compile(
-        r"^\s*(?:%s%s)?(?:%s|%s|%s)\b" % (
+        r"(?:^\s*|[.!?…][\s\"'“”‘’]*)(?:%s%s)?(?:%s|%s|%s)\b" % (
             _INTERJ_RE, _SEP,
             "|".join(_phrase_pattern(a) for a in aliases) or _phrase_pattern(phrase),
             _phrase_pattern(phrase),

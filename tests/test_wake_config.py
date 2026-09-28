@@ -65,6 +65,14 @@ class ConfigurablePhraseTests(unittest.TestCase):
         self.assertIsNone(self.cfg.command("Ho parlato con lari di lavoro."))
         self.assertIsNone(self.cfg.command("Il lario di Como."))
 
+    def test_wake_after_a_monologue_at_a_sentence_boundary(self):
+        # Talking freely and then addressing the device is normal use: only
+        # the request after the wake counts, and a bare wake has no request.
+        self.assertEqual(
+            self.cfg.command("Bla bla bla bla bla. Ehi Lari, che ore sono?"),
+            "che ore sono?")
+        self.assertEqual(self.cfg.command("Bla bla bla bla bla. Ehi Lari."), "")
+
     def test_grammar_carries_the_new_phrase_and_its_core(self):
         self.assertIn("ehi lari", self.cfg.grammar)
         self.assertIn("hey lari", self.cfg.grammar)
