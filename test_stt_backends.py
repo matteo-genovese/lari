@@ -38,7 +38,7 @@ class ElevenLabsTests(unittest.TestCase):
         self.assertEqual(data['language_code'], 'it')
         keyterms = [v for k, v in call['data_tuples'] if k == 'keyterms']
         self.assertEqual(keyterms, ['Sentinel Term'])
-        self.assertEqual(call['file_bytes'], PCM.tobytes())  # PCM nudo, non WAV
+        self.assertEqual(call['file_bytes'], PCM.tobytes())  # bare PCM, not WAV
 
 
 class GroqTests(unittest.TestCase):
@@ -56,7 +56,7 @@ class GroqTests(unittest.TestCase):
         self.assertEqual(data['model'], 'whisper-large-v3')
         self.assertEqual(data['language'], 'it')
         self.assertEqual(data['prompt'], 'sentinel style')
-        self.assertEqual(call['file_bytes'][:4], b'RIFF')  # WAV per Groq
+        self.assertEqual(call['file_bytes'][:4], b'RIFF')  # WAV for Groq
 
 
 class OpenAITests(unittest.TestCase):
@@ -132,9 +132,9 @@ class ServerRoutingTests(unittest.TestCase):
             cmd = server.decode_utterance(PCM, followup=False, backend='groq')
             self.assertEqual(cmd, 'che tempo fa a Roma?')
             follow = server.decode_utterance(PCM, followup=True, backend='groq')
-            # Il residuo di wake viene tolto anche nel follow-up: stessa
-            # semantica del percorso whisper. La differenza del follow-up si
-            # vede sul testo SENZA wake (test_cloud_decode_rejects_speech_without_wake).
+            # The wake leftover is stripped in the follow-up too: same
+            # semantics as the whisper path. The follow-up difference shows
+            # on text WITHOUT the wake (test_cloud_decode_rejects_speech_without_wake).
             self.assertEqual(follow, 'che tempo fa a Roma?')
         self.assertEqual(mocked.call_args.args[1], 'groq')
 
@@ -149,8 +149,10 @@ class ServerRoutingTests(unittest.TestCase):
 
 class RuntimeDispatchTests(unittest.TestCase):
     def test_configured_cloud_backend_is_the_one_called(self):
-        """Il routing runtime deve usare il backend cloud di .env, non Whisper
-        locale: il wiring in _on_wake era rotto anche con decode_utterance giusto."""
+        """Runtime routing must use the .env cloud backend, not local Whisper.
+
+        The wiring in _on_wake was broken even with a correct decode_utterance.
+        """
         import server
         with patch.object(server, 'STT_BACKEND', 'groq'), \
              patch.object(server.stt_backends, 'transcribe',

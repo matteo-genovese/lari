@@ -1,5 +1,8 @@
-"""Dispatch agente per la voce: DeepSeek flash via API diretta (niente tool,
-basso latency) con fallback all'agente Hermes (tool completi, più lento)."""
+"""Voice agent dispatch: DeepSeek flash by default, full Hermes agent as fallback.
+
+DeepSeek flash uses the direct API (no tools, low latency); the Hermes
+agent has complete tools but is slower.
+"""
 import asyncio
 import json
 import unittest

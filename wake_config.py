@@ -19,11 +19,9 @@ INTERJECTIONS = ("hey", "ehi", "eh", "e", "hi", "ok", "ciao", "yo")
 _SEP = r"[\s,.!?:;\-]*"
 
 # Observed free-transcript mis-renderings of known wake cores, used only by the
-# post-wake junk cleanup (never as wake triggers).  Extend via real-voice
-# calibration, not guesses.
-OBSERVED_JUNK: dict[str, tuple[str, ...]] = {
-    "nic": ("inc", "heinrich", "di"),
-}
+# post-wake junk cleanup (never as wake triggers).  Populate per installation
+# via real-voice calibration, not guesses; the public tree ships it empty.
+OBSERVED_JUNK: dict[str, tuple[str, ...]] = {}
 
 # Per-letter ASR confusion classes (accents included).  c/k interchange and
 # i/y interchange are the confusions observed on real phone audio; other

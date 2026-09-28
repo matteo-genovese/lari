@@ -49,7 +49,7 @@ KEYTERMS = list(_WAKE.batch_keyterms)
 # Realtime accepts at most 20 characters per keyterm. These are encoded as
 # repeated query parameters below, as required by the WebSocket API.
 REALTIME_KEYTERMS = _WAKE.realtime_keyterms
-# Groq/OpenAI accettano solo un prompt di stile (max 224 token per Groq).
+# Groq/OpenAI accept only a style prompt (max 224 tokens for Groq).
 STYLE_PROMPT = _WAKE.style_prompt
 
 REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?" + urlencode(
@@ -393,9 +393,9 @@ def _post_multipart(url: str, headers: dict, data_tuples: list,
                     file_bytes: bytes, filename: str, mime: str,
                     timeout: float = 30.0) -> dict:
     import httpx
-    # httpx richiede data come Mapping (una lista di tuple viene trattata come
-    # contenuto raw e l'encoding multipart esplode). I campi ripetuti
-    # (keyterms) diventano valori-lista che _iter_fields espande in campi omonimi.
+    # httpx requires data as a Mapping (a list of tuples is treated as raw
+    # content and the multipart encoding blows up). Repeated fields
+    # (keyterms) become list values that _iter_fields expands into same-named fields.
     form: dict = {}
     for key, value in data_tuples:
         if key in form:
@@ -422,7 +422,7 @@ def transcribe(pcm: np.ndarray, backend: str) -> str:
         raise RuntimeError(f"{key_env} non impostata: aggiungila in desk-buddy/.env")
 
     if backend == "elevenlabs":
-        # PCM nudo 16 kHz mono s16le: file_format=pcm_s16le_16 ha latenza minore.
+        # Bare 16 kHz mono s16le PCM: file_format=pcm_s16le_16 has lower latency.
         call = dict(
             url="https://api.elevenlabs.io/v1/speech-to-text",
             headers={"xi-api-key": key},
@@ -462,7 +462,7 @@ def transcribe(pcm: np.ndarray, backend: str) -> str:
 
     try:
         payload = _post_multipart(**call)
-    except Exception as exc:  # rete, quota, formato: il chiamante decide il fallback
+    except Exception as exc:  # network, quota, format: the caller decides the fallback
         raise RuntimeError(f"STT {backend} fallito: {exc}") from exc
     text = (payload.get("text") or "").strip()
     if not text:

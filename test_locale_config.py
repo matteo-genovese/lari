@@ -62,12 +62,12 @@ class WorkingVoiceConfigTests(unittest.TestCase):
 
     def test_legacy_voice_settings_are_not_replaced_by_brand_settings(self):
         config = inspect_config({
-            "BUDDY_WAKE_PHRASE": "hey nic",
+            "BUDDY_WAKE_PHRASE": "ciao luna",
             "BUDDY_STT_BACKEND": "elevenlabs_realtime",
             "LARI_WAKE_PHRASE": "not-a-runtime-setting",
             "LARI_STT_BACKEND": "whisper",
         })
-        self.assertEqual(config["wake"], "hey nic")
+        self.assertEqual(config["wake"], "ciao luna")
         self.assertEqual(config["backend"], "elevenlabs_realtime")
 
 

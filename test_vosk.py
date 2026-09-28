@@ -41,7 +41,7 @@ class VoskRoutingTests(unittest.TestCase):
 
 class VoskGrammarTests(unittest.TestCase):
     def test_vosk_gate_uses_the_configured_grammar_and_detection(self):
-        cfg = build_wake_config("hey nic")
+        cfg = build_wake_config("ehi lari")
         captured = {}
         fake_vosk = types.ModuleType("vosk")
 
@@ -53,7 +53,7 @@ class VoskGrammarTests(unittest.TestCase):
                 return True
 
             def FinalResult(self):
-                return json.dumps({"text": "ehi nic"})
+                return json.dumps({"text": "ehi lari"})
 
             def Result(self):
                 return json.dumps({"text": ""})

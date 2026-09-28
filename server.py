@@ -32,9 +32,24 @@ BASE_DIR = Path(__file__).resolve().parent
 HERMES_ROOT = Path(os.environ.get("BUDDY_HERMES_ROOT") or (Path.home() / ".hermes" / "hermes-agent")).expanduser()
 sys.path.insert(0, str(HERMES_ROOT))
 
-from tools.wake_word import _build_engine  # noqa: E402  (serve il sorgente di Hermes)
 
-# ─── configurazione ──────────────────────────────────────────────────────────
+def _wake_engine_builder():
+    """Lazy loader for the optional openwakeword engine from the Hermes source.
+
+    The default wake provider (energy VAD + Vosk) never needs it; importing it
+    lazily keeps the bridge importable without a Hermes checkout (CI, fresh
+    installs).
+    """
+    try:
+        from tools.wake_word import _build_engine  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "the openwakeword wake engine needs the Hermes source in "
+            "BUDDY_HERMES_ROOT"
+        ) from exc
+    return _build_engine
+
+# ─── configuration ──────────────────────────────────────────────────────────
 TOKEN = os.environ.get("BUDDY_TOKEN", "").strip()
 PORT = int(os.environ.get("BUDDY_PORT", "8643"))
 HERMES_API = os.environ.get("BUDDY_HERMES_API", "http://127.0.0.1:8642")
@@ -42,18 +57,21 @@ HERMES_KEY = os.environ.get("BUDDY_HERMES_KEY", "")
 SESSION_KEY = os.environ.get("BUDDY_SESSION_KEY", "desk-buddy")
 HERMES_PROVIDER = os.environ.get("BUDDY_HERMES_PROVIDER", "deepseek")
 HERMES_MODEL = os.environ.get("BUDDY_HERMES_MODEL", "deepseek-flash")
-# ─── agente per la voce ──────────────────────────────────────────────────────
-# "deepseek" = DeepSeek flash via API diretta (veloce, NIENTE tool: meteo e
-# notizie non sono in tempo reale). "hermes" = agente Hermes completo (tool
-# veri, molto più lento: 18k token di system prompt per ogni battuta).
+# ─── voice agent ──────────────────────────────────────────────────────
+# "deepseek" = DeepSeek flash via direct API (fast, NO tools: weather and
+# news are not real-time). "hermes" = the full Hermes agent (real tools,
+# much slower: 18k tokens of system prompt per utterance).
 AGENT_BACKEND = os.environ.get("BUDDY_AGENT_BACKEND", "deepseek").strip()
 
-import usage  # noqa: E402  (modulo del progetto)
+import usage  # noqa: E402  (project module)
 USAGE_LEDGER = usage.UsageLedger()
 
 def _deepseek_from_hermes_env() -> tuple[str, str]:
-    """Key/base URL DeepSeek anche da ~/.hermes/.env (il systemd unit del buddy
-    carica solo desk-buddy/.env, la key vive nella config di Hermes)."""
+    """DeepSeek key/base URL also from ~/.hermes/.env.
+
+    The systemd unit loads only the bridge's .env; the key lives in the
+    Hermes config.
+    """
     key = base = ""
     try:
         for line in (Path.home() / ".hermes" / ".env").read_text().splitlines():
@@ -79,8 +97,8 @@ DEEPSEEK_KEY = _ds_key
 DEEPSEEK_API = _ds_base.rstrip("/") or "https://api.deepseek.com"
 DEEPSEEK_MODEL = os.environ.get("BUDDY_DEEPSEEK_MODEL", "deepseek-flash")
 DEEPSEEK_TIMEOUT_S = float(os.environ.get("BUDDY_DEEPSEEK_TIMEOUT", "60"))
-# Voce = risposte corte e parlate. Senza questo, una trascrizione farlocca fa
-# indagare l'agente sui log (125 s nel peggiore dei casi misurati).
+# Voice = short replies meant to be spoken. Without this, a bogus
+# transcription makes the agent dig through logs (125 s in the worst measured case).
 VOICE_SYSTEM = os.environ.get(
     "BUDDY_VOICE_SYSTEM",
     "Sei l'assistente vocale di un assistente personale. Le battute ti arrivano da un "
@@ -125,19 +143,19 @@ TTS_VOICE = os.environ.get("BUDDY_TTS_VOICE", "it-IT-ElsaNeural")
 STT_MODEL = os.environ.get("BUDDY_STT_MODEL", "base")
 STT_BACKEND = os.environ.get("BUDDY_STT_BACKEND", "whisper").strip()
 VOSK_MODEL_DIR = Path(os.environ.get("BUDDY_VOSK_MODEL_DIR", str(BASE_DIR / "models/vosk-model-small-it-0.22")))
-STT_LANG = os.environ.get("BUDDY_STT_LANG", "it").strip()  # "" = rilevamento automatico
-# Gate veloce per il wake: su audio brutto il modello grande impiega 50-60s e
-# blocca tutto. Con un modello piccolo il rifiuto arriva in pochi secondi.
-# Vuoto ("") = un solo passaggio col modello grande.
-# Un modello tiny usato come veto scarta anche parole di sveglia reali («E Nic»).
-# Un solo passaggio con small: meno falsi negativi e niente doppia trascrizione.
+STT_LANG = os.environ.get("BUDDY_STT_LANG", "it").strip()  # "" = auto-detect
+# Fast gate for the wake: on bad audio the large model takes 50-60 s and
+# blocks everything. With a small model the rejection arrives in seconds.
+# Empty ("") = a single pass with the large model.
+# A tiny model used as veto also rejects genuine wake words.
+# A single pass with small: fewer false negatives and no double transcription.
 STT_GATE = os.environ.get("BUDDY_STT_GATE", "").strip()
 
 SAMPLE_RATE = 16000
-FRAME = 1280              # 80 ms @ 16 kHz, dimensione consigliata da openWakeWord
+FRAME = 1280              # 80 ms @ 16 kHz, frame size recommended by openWakeWord
 WAKE_PROVIDER = os.environ.get("BUDDY_WAKE_PROVIDER", "whisper")
-# whisper: qualsiasi parlato apre la registrazione, poi si cerca la frase nel testo.
-# sherpa/openwakeword: motore hotword dedicato (inglese; non coglie la pronuncia IT).
+# whisper: any speech starts the recording, then the phrase is searched in the text.
+# sherpa/openwakeword: dedicated hotword engine (English; misses the IT pronunciation).
 # The wake phrase is one setting: command regex, Vosk grammar, junk cleanup and
 # ASR keyterms all derive from it in wake_config.py.  The regex is
 # start-anchored so background mentions ("ho parlato con ...") never trigger.
@@ -150,7 +168,7 @@ def wake_command(text: str, cfg: wake_config.WakeConfig | None = None) -> str | 
 
 def resolve_command(text: str, conversation_until: float, now: float,
                     cfg: wake_config.WakeConfig | None = None) -> str | None:
-    """Wake al primo turno, poi dialogo libero solo nella finestra di follow-up."""
+    """Wake on the first turn, then free dialog only inside the follow-up window."""
     command = wake_command(text, cfg)
     if command is not None:
         return command
@@ -164,15 +182,15 @@ WAKE_PHRASE = WAKE_CONFIG.phrase
 # passes, so a real wake is never lost to an ASR mishearing.  Set
 # BUDDY_WAKE_CONFIRM=0 to disable.
 WAKE_CONFIRM = os.environ.get("BUDDY_WAKE_CONFIRM", "1").strip() != "0"
-# soglia sherpa = 0.05 + 0.4*sens; 0.5 -> 0.25 (valore consigliato upstream)
+# sherpa threshold = 0.05 + 0.4*sens; 0.5 -> 0.25 (upstream-recommended value)
 WAKE_SENSITIVITY = float(os.environ.get("BUDDY_SENSITIVITY", "0.5"))
 CONFIRM_FRAMES = int(os.environ.get("BUDDY_CONFIRM_FRAMES", "3"))
-COOLDOWN_S = 2.0          # stesso vincolo di Hermes tra due wake
-AMBIENT_PAUSE_S = float(os.environ.get("BUDDY_AMBIENT_PAUSE", "6"))  # pausa dopo un parlato non dedicato a noi
-# Il telefono riproduce la risposta dallo stesso altoparlante usato dal microfono:
-# senza questa mute, il sistema finisce per trascrivere se stesso.
+COOLDOWN_S = 2.0          # same constraint as Hermes between two wakes
+AMBIENT_PAUSE_S = float(os.environ.get("BUDDY_AMBIENT_PAUSE", "6"))  # pause after speech not addressed to us
+# The phone plays the reply through the same speaker the microphone uses:
+# without this mute, the system ends up transcribing itself.
 ECHO_MUTE_S = float(os.environ.get("BUDDY_ECHO_MUTE", "2.5"))
-FOLLOWUP_S = float(os.environ.get("BUDDY_FOLLOWUP_S", "30"))  # dopo la riproduzione audio
+FOLLOWUP_S = float(os.environ.get("BUDDY_FOLLOWUP_S", "30"))  # after audio playback
 PLAYBACK_ACK_TIMEOUT_S = float(os.environ.get("BUDDY_PLAYBACK_ACK_TIMEOUT", "45"))
 
 # Streaming voice responses are deliberately bounded.  The queue is small so a
@@ -182,20 +200,20 @@ STREAM_TTS_QUEUE_MAX = int(os.environ.get("BUDDY_STREAM_TTS_QUEUE_MAX", "8"))
 STREAM_TEXT_MAX_CHARS = int(os.environ.get("BUDDY_STREAM_TEXT_MAX_CHARS", "4000"))
 STREAM_SENTENCE_MAX_CHARS = int(os.environ.get("BUDDY_STREAM_SENTENCE_MAX_CHARS", "280"))
 
-# VAD: soglia adattiva. Soglia base minima + multiplo del rumore di fondo.
+# VAD: adaptive threshold. Minimum base threshold + multiple of the noise floor.
 VAD_MIN_RMS = float(os.environ.get("BUDDY_VAD_MIN_RMS", "900"))
 VAD_NOISE_MULT = float(os.environ.get("BUDDY_VAD_NOISE_MULT", "2.5"))
-# Più tollerante verso le pause mentre si formula una richiesta; il VAD chiude
-# comunque sul silenzio, senza attendere il limite massimo.
+# More tolerant of pauses while a request is being phrased; the VAD still
+# closes on silence, without waiting for the hard limit.
 SILENCE_END_S = float(os.environ.get("BUDDY_SILENCE_END", "2.5"))
-# Solo paracadute contro rumore continuo / VAD bloccato, non durata target di una frase.
+# Only a parachute against continuous noise / a stuck VAD, not a target utterance length.
 MAX_UTTERANCE_S = float(os.environ.get("BUDDY_MAX_UTTERANCE_S", "45"))
 MIN_SPEECH_S = float(os.environ.get("BUDDY_MIN_SPEECH_S", "0.7"))
 IDLE_ABORT_S = float(os.environ.get("BUDDY_IDLE_ABORT_S", "4.0"))
 
 AGENT_TIMEOUT_S = float(os.environ.get("BUDDY_AGENT_TIMEOUT", "180"))
 CLI_TIMEOUT_S = float(os.environ.get("BUDDY_CLI_TIMEOUT", "70"))
-os.environ.setdefault("HF_HUB_OFFLINE", "1")  # niente revision check a ogni caricamento STT
+os.environ.setdefault("HF_HUB_OFFLINE", "1")  # no revision check at every STT model load
 
 log = logging.getLogger("desk-buddy")
 logging.basicConfig(
@@ -209,7 +227,7 @@ _stt_lock = threading.Lock()
 
 
 def get_stt(model: str | None = None):
-    """Singleton lazy di faster-whisper (il modello base pesa ~150 MB, caricalo una volta)."""
+    """Lazy singleton for faster-whisper (the base model weighs ~150 MB; load it once)."""
     with _stt_lock:
         name = model or STT_MODEL
         if name not in _stt:
@@ -220,29 +238,29 @@ def get_stt(model: str | None = None):
 
 
 def transcribe(pcm: np.ndarray, model: str | None = None) -> str:
-    """pcm: int16 16 kHz mono -> testo."""
+    """pcm: int16 16 kHz mono -> text."""
     audio = pcm.astype(np.float32) / 32768.0
-    # Lingua FISSA: il rilevamento automatico su clip corti e rumorosi impazzisce
-    # (è uscito giapponese). Vuoto ("") = auto.
+    # FIXED language: auto-detection on short noisy clips goes haywire
+    # (it once returned Japanese). Empty ("") = auto.
     lang = STT_LANG or None
     segments, info = get_stt(model).transcribe(
         audio,
         language=lang,
         beam_size=1,                        # beam5 measured slower on low-power CPUs
         vad_filter=True,
-        vad_parameters={"threshold": 0.6,   # taglia di più i frammenti di rumore
+        vad_parameters={"threshold": 0.6,   # trims noise fragments harder
                         "min_silence_duration_ms": 400},
-        hallucination_silence_threshold=2.0,  # taglia le frasi inventate in coda
-        condition_on_previous_text=False,   # altrimenti il modello si auto-alimenta di ripetizioni
-        # prompt CORTO: un prompt lungo viene ripetuto dall'ASR al posto dell'audio
-        # (hallucination), specialmente sulle registrazioni rumorose
+        hallucination_silence_threshold=2.0,  # trims hallucinated sentences at the tail
+        condition_on_previous_text=False,   # otherwise the model feeds itself repetitions
+        # SHORT prompt: a long prompt gets repeated by the ASR instead of the audio
+        # (hallucination), especially on noisy recordings
         initial_prompt=WAKE_CONFIG.prompt,
     )
     text = " ".join(s.text for s in segments).strip()
     log.info("STT lang=%s prob=%.2f -> %r", info.language, info.language_probability, text)
-    # Guardia anti-fantasma: su quasi-silenzio o rumore Whisper inventa frasi
-    # brevi e ricorrenti ("I'm sorry.", parole in altre lingue...). Se non c'è
-    # nemmeno una parola vera, il testo si scarta invece di passarlo all'agente.
+    # Anti-hallucination guard: on near-silence or noise Whisper invents short,
+    # recurring sentences ("I'm sorry.", words in other languages...). If there
+    # is not even one real word, the text is discarded instead of sent to the agent.
     words = [w for w in re.findall(r"[A-Za-zÀ-ÿ']{3,}", text)]
     black = {"im sorry", "i'm sorry", "sorry", "thanks for watching", "subscrib", "musica"}
     low = text.lower().strip(" .!?")
@@ -256,7 +274,7 @@ _vosk_model = None
 _vosk_lock = threading.Lock()
 
 def get_vosk():
-    """Carica il piccolo modello italiano una volta; un recognizer per chiamata."""
+    """Load the small Italian model once; one recognizer per call."""
     global _vosk_model
     with _vosk_lock:
         if _vosk_model is None:
@@ -266,7 +284,7 @@ def get_vosk():
         return _vosk_model
 
 def vosk_wake(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> bool:
-    """Rileva il wake nei primi 2.5 s senza forzare il resto nella grammar."""
+    """Detect the wake in the first 2.5 s without forcing the rest through the grammar."""
     from vosk import KaldiRecognizer
     cfg = cfg or WAKE_CONFIG
     rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE, json.dumps(list(cfg.grammar)))
@@ -276,7 +294,7 @@ def vosk_wake(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> boo
     return bool(cfg.loose_re.search(heard))
 
 def transcribe_vosk(pcm: np.ndarray) -> str:
-    """Trascrizione italiana CPU locale, a blocchi dell'enunciato."""
+    """Local CPU Italian transcription, fed in utterance-sized blocks."""
     from vosk import KaldiRecognizer
     rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE)
     words = []
@@ -344,9 +362,9 @@ def _transcribe_local_fallback(pcm: np.ndarray) -> str:
 
 
 def stt_transcribe(pcm: np.ndarray) -> str:
-    """Testo grezzo dal backend STT configurato: cloud (groq/elevenlabs/openai)
-    oppure Whisper locale. Un solo punto di dispatch: _on_wake non deve più
-    scegliere a mano (prima mandava tutto tranne vosk a Whisper locale)."""
+    """Raw text from the configured STT backend: cloud (groq/elevenlabs/openai)
+    or local Whisper. A single dispatch point: _on_wake no longer has to pick
+    by hand (it used to send everything but vosk to local Whisper)."""
     if STT_BACKEND == stt_backends.REALTIME_BACKEND:
         # Realtime callers must never silently turn a provider failure into a
         # paid batch request.  The live path is opened only after local wake
@@ -387,18 +405,18 @@ async def transcribe_realtime_or_batch(pcm: np.ndarray, realtime, turn: int,
 
 
 def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None) -> str | None:
-    """Trascrive e filtra wake; None = parlato non rivolto a Nic."""
+    """Transcribe and filter the wake; None = speech not addressed to the bridge."""
     backend = backend or STT_BACKEND
     if backend == "vosk":
-        # La grammar guarda solo l'inizio: non distorce la trascrizione libera.
+        # The grammar only looks at the start: it does not distort free transcription.
         wake = False if followup else vosk_wake(pcm)
         if not wake and not followup:
             return None
         text = transcribe_vosk(pcm)
         return resolve_vosk_command(text, wake, followup) if text else None
     if backend in stt_backends.BACKENDS:
-        # Cloud (A/B/C): stesse regole di whisper — wake regexata sul testo,
-        # finestra di follow-up valutata all'inizio del turno.
+        # Cloud (A/B/C): same rules as whisper — the wake is regexed against the
+        # text, the follow-up window is evaluated at the start of the turn.
         text = stt_backends.transcribe(pcm, backend)
         return resolve_command(text, float("inf") if followup else 0.0,
                                time.monotonic()) if text else None
@@ -414,7 +432,7 @@ def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None
 
 def save_turn_audio(pcm: np.ndarray, directory: Path | None = None,
                     name: str | None = None, keep: int = 5) -> Path:
-    """Conserva pochi WAV dei turni per una diagnosi riproducibile (solo locale)."""
+    """Keep a few turn WAVs for reproducible diagnostics (local only)."""
     import wave
     directory = directory or BASE_DIR / "calibration" / "turns"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -433,7 +451,7 @@ def save_turn_audio(pcm: np.ndarray, directory: Path | None = None,
 
 
 def tts(text: str) -> bytes:
-    """Testo -> mp3 via edge-tts."""
+    """Text -> mp3 via edge-tts."""
     import asyncio as _a
     import edge_tts
 
@@ -512,7 +530,7 @@ class SpeakableSentenceBuffer:
 
 
 async def ask_hermes(text: str, session_id: str | None = None) -> HermesReply:
-    """Invia la battuta all'agente, continuando ``session_id`` quando presente.
+    """Send the utterance to the agent, continuing ``session_id`` when present.
 
     The return value remains string-compatible for existing callers and carries the
     response's ``X-Hermes-Session-Id`` as ``.session_id``.
@@ -543,7 +561,7 @@ async def ask_hermes(text: str, session_id: str | None = None) -> HermesReply:
             data = r.json()
             reply = (data["choices"][0]["message"]["content"] or "").strip()
             return HermesReply(reply, r.headers.get("X-Hermes-Session-Id"))
-    except Exception as exc:  # API server spento -> fallback CLI
+    except Exception as exc:  # API server down -> CLI fallback
         if session_id:
             # A CLI continuation has different state semantics. Keep the explicit
             # transcript id private to this WebSocket and surface a concise error.
@@ -705,8 +723,8 @@ async def stream_hermes(
 
 
 def _ask_cli(text: str) -> str:
-    """Fallback senza API server. stdin=DEVNULL: un prompt di approvazione deve
-    fallire subito invece di restare appeso in attesa di un tty che non esiste."""
+    """Fallback without the API server. stdin=DEVNULL: an approval prompt must
+    fail immediately instead of hanging while waiting for a tty that does not exist."""
     import subprocess as sp
 
     t0 = time.time()
@@ -730,8 +748,8 @@ def _ask_cli(text: str) -> str:
 
 
 async def _post_chat(url: str, headers: dict, payload: dict, timeout: float) -> dict:
-    """POST JSON verso un endpoint chat/completions (unico punto HTTP per il
-    test mockato)."""
+    """POST JSON to a chat/completions endpoint (the single HTTP point for the
+    mocked test)."""
     import httpx
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(url, headers=headers, json=payload)
@@ -739,8 +757,8 @@ async def _post_chat(url: str, headers: dict, payload: dict, timeout: float) -> 
         return r.json()
 
 async def ask_deepseek(text: str) -> str:
-    """DeepSeek flash via API diretta: ~1 s, niente strumenti. Il modello non
-    ha dati in tempo reale (meteo, notizie): lo dichiara invece di inventarli."""
+    """DeepSeek flash via direct API: ~1 s, no tools. The model has no
+    real-time data (weather, news): it says so instead of making it up."""
     if not DEEPSEEK_KEY:
         raise RuntimeError("DEEPSEEK_API_KEY non impostata")
     system = (VOICE_SYSTEM +
@@ -762,8 +780,8 @@ async def ask_deepseek(text: str) -> str:
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 async def ask(text: str, session_id: str | None = None) -> str:
-    """Dispatch agente della voce: DeepSeek flash di default (veloce), fallback
-    automatico all'agente Hermes completo se cade o se backend=hermes."""
+    """Voice agent dispatch: DeepSeek flash by default (fast), with automatic
+    fallback to the full Hermes agent if it fails or backend=hermes."""
     if AGENT_BACKEND == "deepseek":
         try:
             return await ask_deepseek(text)
@@ -780,29 +798,29 @@ def make_engine():
         "phrase": WAKE_PHRASE,
         "sensitivity": WAKE_SENSITIVITY,
         "confirmation_frames": CONFIRM_FRAMES,
-        "profile_routing": False,   # solo la frase del buddy: niente routing profili Hermes
+        "profile_routing": False,   # only the bridge's phrase: no Hermes profile routing
         "openwakeword": {"model": "hey_hermes"},
     }
-    return _build_engine(cfg)
+    return _wake_engine_builder()(cfg)
 
 
 class Session:
-    """Stato di una connessione satellite (un dispositivo = una sessione)."""
+    """State of one satellite connection (one device = one session)."""
 
     def __init__(self, ws: WebSocket, send_json):
         self.ws = ws
         self.send_json = send_json
         self.engine = None
-        self.state = "listening"           # il worker parte subito in ascolto
-        self.frames = bytearray()          # residuo di allineamento frame
+        self.state = "listening"           # the worker starts listening immediately
+        self.frames = bytearray()          # frame-alignment residue
         self.last_wake = 0.0
-        self.noise_floor = 500.0           # EMA del rumore di fondo
-        self.last_silent = time.time()     # ultimo frame realmente silenzioso
+        self.noise_floor = 500.0           # EMA of the noise floor
+        self.last_silent = time.time()     # last truly silent frame
         self.recv_queue: queue.Queue = queue.Queue(maxsize=400)
         self.stop = threading.Event()
         self.turn = 0
-        # buffer rotante di calibrazione: ultimi ~12 s di microfono, per capire
-        # cosa sente davvero il rilevatore quando non scatta
+        # rotating calibration buffer: the last ~12 s of microphone, to see
+        # what the detector really hears when it does not fire
         self.recent = bytearray()
         self.recent_lock = threading.Lock()
         self.last_tts = 0.0
@@ -876,7 +894,7 @@ class Session:
         self.playback_status = status
         if completed:
             self.conversation_until = (time.monotonic() if now is None else now) + FOLLOWUP_S
-            # Il browser aggiunge 700 ms di mute alla fine del playback.
+            # The browser adds 700 ms of mute at the end of playback.
             self.last_tts = time.time() - ECHO_MUTE_S + 0.7
         else:
             self.conversation_until = 0.0
@@ -1087,7 +1105,7 @@ class Session:
         self.state = state
         await self.send_json({"type": "state", "state": state, **extra})
 
-    # —— wake: eseguito in thread dedicato, l'event loop non deve mai bloccare ——
+    # —— wake: runs in a dedicated thread; the event loop must never block ——
     def _remember_audio(self, chunk: bytes) -> None:
         with self.recent_lock:
             self.recent += chunk
@@ -1241,18 +1259,18 @@ class Session:
         if current_task is not None:
             current_task.add_done_callback(clear_active_turn)
         t_turn = time.time()
-        # La finestra va valutata quando inizia a parlare, NON dopo lo STT:
+        # The window must be evaluated when speech starts, NOT after STT:
         # On slow CPUs transcription can take many seconds.
         followup_at_start = time.monotonic() < self.conversation_until and not self.awaiting_playback
         await self.set_state("waking", turn=turn, followup=followup_at_start)
         await self._clear_partial(turn)
-        # pre-roll: la frase di sveglia è già passata mentre il trigger decidesse,
-        # quindi si riparte dagli ultimi 1.5s già presenti nel buffer rotante
+        # pre-roll: the wake phrase has already passed while the trigger decides,
+        # so restart from the last 1.5 s already held in the rotating buffer
         prelude = bytes(initial_pcm)
         if not prelude and WAKE_PROVIDER == "whisper":
             with self.recent_lock:
                 prelude = bytes(self.recent[-int(1.5 * SAMPLE_RATE * 2):])
-        # pausa solo se abbiamo appena risposto (eco della TTS)
+        # pause only if a reply was just played (TTS echo)
         if time.time() - self.last_tts < 3.0:
             await asyncio.sleep(0.25)
         await self.set_state("recording", turn=turn, followup=followup_at_start)
@@ -1342,7 +1360,7 @@ class Session:
                 await self.set_state("listening", turn=turn)
                 return
             text = cmd.strip()
-            self.conversation_until = 0.0  # prossimo turno solo dopo la riproduzione
+            self.conversation_until = 0.0  # next turn only after playback
             log.info("comando %s: %r", "follow-up" if followup_at_start else "wake", text[:120])
             self._partial_turn = None
             await self.send_json({"type": "transcript", "text": text, "turn": turn, "command": True})
@@ -1425,7 +1443,7 @@ class Session:
         log.info("turno %d completato in %.1fs", turn, time.time() - t_turn)
 
     async def _speak(self, text: str, turn: int):
-        """TTS -> audio al cliente; in errore logga e torna in ascolto."""
+        """TTS -> audio to the client; on error log and return to listening."""
         await self.set_state("speaking", turn=turn)
         try:
             audio = await asyncio.to_thread(tts, text)
@@ -1460,12 +1478,12 @@ class Session:
             self._turn_paid_s = 0.0
 
     async def _record_utterance(self, prelude: bytes = b"", realtime=None):
-        """VAD: raccoglie PCM finché c'è parlato, poi chiude dopo SILENCE_END_S di silenzio.
+        """VAD: collect PCM while speech lasts, then close after SILENCE_END_S of silence.
 
-        I tempi sono calcolati sui campioni ricevuti (non sul wall clock), così il
-        comportamento resta identico sia con lo stream in tempo reale sia in test.
-        `prelude` sono i secondi che precedono il trigger (serve a non perdere la
-        frase di sveglia, detta prima che il sistema reagisca).
+        Timing is computed on received samples (not the wall clock), so the
+        behavior stays identical with the live stream and in tests.
+        `prelude` is the audio that precedes the trigger (it keeps the wake
+        phrase, spoken before the system reacts, from being lost).
         """
         collected = bytearray(prelude)
         voiced_s = 0.0
@@ -1513,7 +1531,7 @@ class Session:
             try:
                 chunk = await asyncio.to_thread(self.recv_queue.get, True, 0.2)
             except queue.Empty:
-                # stream interrotto (cliente fermo): chiudi invece di restare appesa
+                # stream interrupted (client stalled): close instead of hanging
                 if time.time() - last_data > 3.0:
                     break
                 continue
@@ -1530,11 +1548,11 @@ class Session:
                 await forward_audio(chunk)
             rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
             threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
-            # Il floor si adatta SOLO prima del primo parlato: durante
-            # un'utterance le sillabe pianissime verrebbero imparate come rumore
-            # ambiente, la soglia salirebbe oltre i picchi del parlante e il
-            # registratore resterebbe appeso (fallimento reale: 22s raccolti,
-            # frase detta due volte nella trascrizione).
+            # The floor adapts ONLY before the first speech: during an
+            # utterance the quietest syllables would be learned as ambient noise,
+            # the threshold would rise above the speaker's own peaks and the
+            # recorder would hang (real failure: 22 s collected, sentence
+            # spoken twice in the transcript).
             if not started:
                 if rms < threshold:
                     self.noise_floor = 0.98 * self.noise_floor + 0.02 * max(rms, 1.0)
@@ -1552,9 +1570,9 @@ class Session:
                 voiced_s += dt
             elif started:
                 idle_s += dt
-                # Chiudi comunque dopo il doppio del silenzio atteso: il wake o il
-                # follow-up hanno già confermato l'intento parlato, il quorum
-                # voiced non deve poter appendere il registratore.
+                # Close anyway after double the expected silence: the wake or the
+                # follow-up already confirmed spoken intent; the voiced quorum
+                # must never be able to hang the recorder.
                 if idle_s >= SILENCE_END_S and (
                         voiced_s >= MIN_SPEECH_S or idle_s >= SILENCE_END_S + 2.0):
                     break
@@ -1568,10 +1586,10 @@ class Session:
                 break
         pcm = np.frombuffer(bytes(collected), dtype=np.int16)
         log.info("VAD: raccolti %.2fs (parlato %.2fs, started=%s)", len(pcm) / SAMPLE_RATE, voiced_s, started)
-        # Non tagliare la testa: il pre-roll contiene il wake, spesso più piano
-        # del comando. Il precedente trim energetico ha rimosso «Hey Nic»
-        # lasciando solo «Che tempo fa domani...», poi scartato dalla regex.
-        # Whisper ha già il proprio VAD per il silenzio di testa.
+        # Never trim the head: the pre-roll contains the wake, often quieter
+        # than the command. The previous energy trim removed the wake phrase,
+        # leaving only "what's the weather tomorrow...", which the regex then
+        # rejected. Whisper already has its own VAD for leading silence.
         start = 0
         thr = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT) * 0.5
         win = 1600
@@ -1592,12 +1610,12 @@ _sessions: set[Session] = set()
 
 @app.get("/")
 async def root():
-    return Response(content="desk-buddy: apri /<token>/", media_type="text/plain")
+    return Response(content="lari: open /<token>/", media_type="text/plain")
 
 
 @app.get("/{token}/debug/last.wav")
 async def debug_last(token: str):
-    """Gli ultimi ~12 s di microfono, per calibrare soglia/frase offline."""
+    """The last ~12 s of microphone audio, to calibrate threshold/phrase offline."""
     if not TOKEN or token != TOKEN:
         return Response(content="token errato", status_code=403)
     for s in _sessions:
@@ -1623,7 +1641,7 @@ async def page(token: str):
     return FileResponse(
         BASE_DIR / "static" / "index.html",
         media_type="text/html",
-        headers={"Cache-Control": "no-store, must-revalidate"},   # niente HTML vecchio in cache
+        headers={"Cache-Control": "no-store, must-revalidate"},   # no stale HTML from cache
     )
 
 
@@ -1753,8 +1771,8 @@ async def ws_endpoint(token: str, websocket: WebSocket):
             session.recv_queue.put_nowait(None)
         except Exception:
             pass
-        # calibrazione: salva gli ultimi ~12s di microfono, così si può
-        # rianalizzare offline dopo ogni test dell'utente
+        # calibration: save the last ~12 s of microphone so it can be
+        # re-analyzed offline after each user test
         try:
             with session.recent_lock:
                 data = bytes(session.recent)

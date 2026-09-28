@@ -4,35 +4,46 @@ Pure derivation tests: no server import, no provider, no network.
 """
 import re
 import unittest
+from unittest.mock import patch
+
+import wake_config
 
 from wake_config import build_wake_config, default_phrase
 
 
-class ProvenHeyNicParityTests(unittest.TestCase):
-    """The tuned \"hey nic\" config must keep its battle-tested behavior."""
+class ProvenWakeParityTests(unittest.TestCase):
+    """The default live config must keep its battle-tested behavior."""
 
     def setUp(self):
-        self.cfg = build_wake_config("hey nic")
+        self.cfg = build_wake_config("ehi lari")
 
     def test_grammar_matches_the_proven_list_exactly(self):
-        self.assertEqual(self.cfg.grammar, ("ehi nic", "hey nic", "nic", "[unk]"))
+        self.assertEqual(self.cfg.grammar,
+                         ("hey lari", "ehi lari", "lari", "[unk]"))
 
     def test_prompt_matches_the_proven_prompt_exactly(self):
-        self.assertEqual(self.cfg.prompt, "Hey Nic. Ehi Nic.")
+        self.assertEqual(self.cfg.prompt, "Ehi Lari. Hey Lari.")
 
     def test_keyterms_lead_with_the_wake_forms(self):
-        self.assertEqual(self.cfg.keyterms[:3], ("Hey Nic", "Ehi Nic", "Nic"))
+        self.assertEqual(self.cfg.keyterms[:3], ("Ehi Lari", "Hey Lari", "Lari"))
 
     def test_loose_detection_accepts_any_grammar_form(self):
-        for heard in ("ehi nic", "hey nic", "nic"):
+        for heard in ("ehi lari", "hey lari", "lari"):
             self.assertIsNotNone(self.cfg.loose_re.search(heard), heard)
         self.assertIsNone(self.cfg.loose_re.search("ehi larice"))
 
-    def test_cleanup_strips_observed_asr_junk_and_short_interjections(self):
-        self.assertEqual(self.cfg.strip_junk("Heinrich che tempo fa?"), "che tempo fa?")
-        self.assertEqual(self.cfg.strip_junk("inc dimmi"), "dimmi")
+    def test_cleanup_strips_short_interjections_and_alias_words(self):
         self.assertEqual(self.cfg.strip_junk("Ehi, che tempo fa?"), "che tempo fa?")
         self.assertEqual(self.cfg.strip_junk("Che tempo fa?"), "Che tempo fa?")
+        aliased = build_wake_config("ehi lari", aliases=("ehi lar",))
+        self.assertEqual(aliased.strip_junk("lar dimmi"), "dimmi")
+
+    def test_observed_asr_junk_is_per_installation_calibration(self):
+        with patch.dict(wake_config.OBSERVED_JUNK, {"lari": ("larix",)}):
+            cfg = build_wake_config("ehi lari")
+        self.assertEqual(cfg.strip_junk("larix che tempo fa?"), "che tempo fa?")
+        self.assertEqual(cfg.strip_junk("Heinrich che tempo fa?"),
+                         "Heinrich che tempo fa?")
 
 
 class ConfigurablePhraseTests(unittest.TestCase):
@@ -72,7 +83,7 @@ class ConfigurablePhraseTests(unittest.TestCase):
         self.assertIn("ehi lar", cfg.grammar)
         self.assertEqual(cfg.strip_junk("ehi lar dimmi"), "dimmi")
 
-    def test_new_phrase_has_no_nic_specific_junk_words(self):
+    def test_fresh_phrase_has_no_built_in_junk_words(self):
         self.assertEqual(self.cfg.strip_junk("Heinrich lari"), "Heinrich lari")
 
 
@@ -87,19 +98,19 @@ class DefaultPhraseTests(unittest.TestCase):
 class DerivedProviderTermsTests(unittest.TestCase):
     def test_vocabulary_terms_join_wake_terms_for_batch(self):
         cfg = build_wake_config(
-            "hey nic", vocab=("centro commerciale Aura", "Aura", "Roma Termini"),
+            "ehi lari", vocab=("centro commerciale Aurora", "Aurora"),
         )
         self.assertEqual(
             cfg.batch_keyterms,
-            ("Hey Nic", "Ehi Nic", "Nic", "centro commerciale Aura", "Aura", "Roma Termini"),
+            ("Ehi Lari", "Hey Lari", "Lari", "centro commerciale Aurora", "Aurora"),
         )
 
     def test_realtime_keyterms_respect_the_20_char_provider_limit(self):
         cfg = build_wake_config(
-            "hey nic", vocab=("centro commerciale Aura", "Aura", "Roma Termini"),
+            "ehi lari", vocab=("centro commerciale Aurora", "Aurora"),
         )
         self.assertEqual(cfg.realtime_keyterms,
-                         ("Hey Nic", "Ehi Nic", "Nic", "Aura", "Roma Termini"))
+                         ("Ehi Lari", "Hey Lari", "Lari", "Aurora"))
         self.assertTrue(all(len(term) <= 20 for term in cfg.realtime_keyterms))
 
     def test_without_vocabulary_only_wake_terms_are_sent(self):
@@ -108,9 +119,9 @@ class DerivedProviderTermsTests(unittest.TestCase):
         self.assertGreater(len(cfg.realtime_keyterms), 1)
 
     def test_style_prompt_mentions_the_configured_wake(self):
-        cfg = build_wake_config("ehi lari", vocab=("Roma Termini",))
+        cfg = build_wake_config("ehi lari", vocab=("Stazione Centrale",))
         self.assertIn("Ehi Lari / Hey Lari", cfg.style_prompt)
-        self.assertIn("Roma Termini", cfg.style_prompt)
+        self.assertIn("Stazione Centrale", cfg.style_prompt)
         plain = build_wake_config("ehi lari")
         self.assertNotIn("Nomi propri", plain.style_prompt)
 

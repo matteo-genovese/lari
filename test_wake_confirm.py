@@ -11,37 +11,37 @@ import numpy as np
 import server
 from wake_config import build_wake_config
 
-NIC = build_wake_config("hey nic")
+LARI = build_wake_config("hey lari")
 
 
 class ConfirmedAbsenceTests(unittest.TestCase):
     def test_clear_non_wake_speech_from_both_recognizers_is_vetoed(self):
-        self.assertTrue(NIC.confirmed_absent(
+        self.assertTrue(LARI.confirmed_absent(
             "che tempo fa domani a Roma", "vorrei andare a fare shopping"))
 
     def test_one_clean_recognizer_is_not_enough_to_veto(self):
-        self.assertFalse(NIC.confirmed_absent("che tempo fa domani a Roma", "uh uh"))
+        self.assertFalse(LARI.confirmed_absent("che tempo fa domani a Roma", "uh uh"))
 
     def test_empty_or_unintelligible_transcripts_never_veto(self):
-        self.assertFalse(NIC.confirmed_absent("", "che tempo fa domani a Roma"))
-        self.assertFalse(NIC.confirmed_absent("sì", "che tempo fa domani a Roma"))
+        self.assertFalse(LARI.confirmed_absent("", "che tempo fa domani a Roma"))
+        self.assertFalse(LARI.confirmed_absent("sì", "che tempo fa domani a Roma"))
 
     def test_observed_wake_renderings_never_veto(self):
-        for text in ("E Nick, che tempo fa?", "Nica, che tempo fa?",
-                     "Heinrich, che tempo fa?", "inc che tempo fa"):
+        for text in ("E Lare, che tempo fa?", "Lary, che tempo fa?",
+                     "Ehi Lari, che tempo fa?", "lari che tempo fa"):
             with self.subTest(text=text):
-                self.assertFalse(NIC.confirmed_absent(text, "che tempo fa domani a Roma"))
+                self.assertFalse(LARI.confirmed_absent(text, "che tempo fa domani a Roma"))
 
     def test_bare_interjection_start_keeps_the_benefit_of_the_doubt(self):
-        self.assertFalse(NIC.confirmed_absent("Ehi, che tempo fa domani a Roma",
+        self.assertFalse(LARI.confirmed_absent("Ehi, che tempo fa domani a Roma",
                                               "ehi che tempo fa domani a roma"))
 
     def test_mid_sentence_mentions_block_the_veto(self):
-        self.assertFalse(NIC.confirmed_absent("ho parlato con Nic di lavoro",
-                                              "ho parlato con nic di lavoro"))
+        self.assertFalse(LARI.confirmed_absent("ho parlato con Lari di lavoro",
+                                              "ho parlato con lari di lavoro"))
 
     def test_lookalike_words_are_not_mentions(self):
-        self.assertTrue(NIC.confirmed_absent("un unico biglietto per milano",
+        self.assertTrue(LARI.confirmed_absent("un unico biglietto per milano",
                                             "unico biglietto per milano"))
 
 
@@ -73,7 +73,7 @@ class SecondGateWiringTests(unittest.TestCase):
 
     def test_doubt_passes_without_running_the_slow_model(self):
         with patch.object(server, "transcribe_vosk",
-                          return_value="Ehi Nica, che tempo fa"), \
+                          return_value="Ehi Lare, che tempo fa"), \
              patch.object(server, "transcribe",
                           side_effect=AssertionError("must not run")):
             self.assertTrue(server.confirm_candidate(np.zeros(4000, dtype=np.int16)))

@@ -13,32 +13,37 @@ from wake_config import build_wake_config
 
 # Parity suite for the tuned live phrase: every observed variant must survive
 # the derived wake config unchanged.
-NIC = build_wake_config("hey nic")
-wake_command = partial(_wake_command, cfg=NIC)
-resolve_command = partial(_resolve_command, cfg=NIC)
+LARI = build_wake_config("hey lari")
+wake_command = partial(_wake_command, cfg=LARI)
+resolve_command = partial(_resolve_command, cfg=LARI)
 
 
 class WakeTests(unittest.TestCase):
     def test_real_phone_transcript_is_not_discarded(self):
-        text = ('E Nic, che ti ando farò mani a Roma, voi andare a first show, '
-                'quindi il centro con me ci ha le augure.')
-        self.assertIsNotNone(NIC.command_re.search(text))
+        text = ('E Lari, mi dica che tempo fara domani in centro, '
+                'che devo uscire senza ombrellone.')
+        self.assertIsNotNone(LARI.command_re.search(text))
         self.assertEqual(wake_command(text), text.split(',', 1)[1].strip())
 
     def test_wake_variants_from_asr_are_accepted(self):
-        # I modelli ASR rendono «Ehi Nic» come "Nica"/"Nici": il gate deve
-        # accettarle (fino a 2 lettere spurie) ma non nomi lunghi come Nicola/Nicole.
-        self.assertEqual(wake_command('Ehi Nica, che tempo fa?'), 'che tempo fa?')
-        self.assertEqual(wake_command('Ehi Nici, come the weather?'), 'come the weather?')
-        self.assertEqual(wake_command('Hey Nick, dimmi.'), 'dimmi.')
-        self.assertIsNone(wake_command('Hey Nicola, che tempo fa?'))
-        self.assertIsNone(wake_command("Non c'è Nicola stasera."))
+        # ASR renders the wake's final vowel across its confusion set
+        # (lari -> lare/lary) and a consonant core with up to two spurious
+        # letters (ric -> rica/rici/rick), never long lookalikes.
+        self.assertEqual(wake_command('Ehi Lare, che tempo fa?'), 'che tempo fa?')
+        self.assertEqual(wake_command('Ehi Lary, come the weather?'), 'come the weather?')
+        self.assertIsNone(wake_command('Hey Larice, che tempo fa?'))
+        self.assertIsNone(wake_command("Non c'è Larice stasera."))
+        ric = build_wake_config('hey ric')
+        self.assertEqual(ric.command('Ehi Rica, che tempo fa?'), 'che tempo fa?')
+        self.assertEqual(ric.command('Ehi Rici, dimmi.'), 'dimmi.')
+        self.assertEqual(ric.command('Hey Rick, dimmi.'), 'dimmi.')
+        self.assertIsNone(ric.command('Hey Riccardo, che tempo fa?'))
 
     def test_does_not_trigger_on_nickname_in_background(self):
-        self.assertIsNone(wake_command('Ho parlato con Nic di lavoro.'))
+        self.assertIsNone(wake_command('Ho parlato con Lari di lavoro.'))
 
-    def test_standard_hey_nic(self):
-        self.assertEqual(wake_command('Hey Nic, che tempo fa domani a Roma?'),
+    def test_standard_wake(self):
+        self.assertEqual(wake_command('Hey Lari, che tempo fa domani a Roma?'),
                          'che tempo fa domani a Roma?')
 
     def test_followup_without_wake_only_during_conversation_window(self):
@@ -46,7 +51,7 @@ class WakeTests(unittest.TestCase):
         self.assertIsNone(resolve_command(phrase, conversation_until=0, now=100))
         self.assertEqual(resolve_command(phrase, conversation_until=130, now=100), phrase)
         self.assertIsNone(resolve_command(phrase, conversation_until=99, now=100))
-        self.assertEqual(resolve_command('Hey Nic, che tempo fa?', conversation_until=0, now=100),
+        self.assertEqual(resolve_command('Hey Lari, che tempo fa?', conversation_until=0, now=100),
                          'che tempo fa?')
 
     def test_playback_ack_opens_followup_window(self):
@@ -57,7 +62,7 @@ class WakeTests(unittest.TestCase):
         session.mark_playback_done(now=100.0)
         self.assertFalse(session.awaiting_playback)
         self.assertEqual(session.conversation_until, 100.0 + 30.0)
-        session.mark_playback_done(now=200.0)  # ack duplicato non estende la sessione
+        session.mark_playback_done(now=200.0)  # a duplicate ack does not extend the session
         self.assertEqual(session.conversation_until, 130.0)
 
     def test_hermes_session_id_belongs_to_the_websocket_session(self):
@@ -73,8 +78,8 @@ class WakeTests(unittest.TestCase):
         async def sender(_):
             pass
         session = Session(None, sender)
-        # Il wake nel pre-roll è più piano del comando; il trim non deve
-        # eliminarlo, anche se non supera la soglia energetica del VAD.
+        # The wake in the pre-roll is quieter than the command; trimming must
+        # never remove it even when it stays below the VAD energy threshold.
         wake = np.full(16000, 250, dtype=np.int16)
         loud = np.full(16000, 3000, dtype=np.int16)
         for offset in range(0, len(loud), 1600):
@@ -90,8 +95,8 @@ class WakeTests(unittest.TestCase):
         session = Session(None, sender)
         voice = np.full(16000, 3000, dtype=np.int16)
         silence = np.zeros(16000, dtype=np.int16)
-        # 15 s parlati + 2 s di pausa + seconda parte: non finire a 12 s
-        # né durante la pausa. Una pausa finale sufficientemente lunga chiude.
+        # 15s spoken + 2s pause + second part: never end at 12s nor inside
+        # the pause. A long enough trailing pause closes the utterance.
         for chunk in [voice] * 15 + [silence] * 2 + [voice] * 2 + [silence] * 3:
             session.recv_queue.put_nowait(chunk.tobytes())
         audio = asyncio.run(session._record_utterance())
