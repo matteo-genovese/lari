@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="static/assets/logo.jpg" alt="Lari — the Lare" width="240">
+</p>
+
 # Lari
 
 **Lari** is a self-hosted voice bridge for [Hermes](https://github.com/NousResearch/hermes-agent). A phone browser acts as a microphone and speaker; Hermes remains the assistant brain. Each satellite is a **Lare**, represented by the five-state flame mascot. A dedicated hardware satellite is future work.

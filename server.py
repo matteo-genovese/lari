@@ -1597,18 +1597,23 @@ async def page(token: str):
 
 @app.get("/{token}/assets/{asset_name}")
 async def mascot_asset(token: str, asset_name: str):
-    """Serve only bundled mascot SVGs to clients with the installation token."""
+    """Serve only bundled mascot and branding assets to clients with the installation token."""
     if not TOKEN or token != TOKEN:
         return Response(content="Forbidden", status_code=403)
     if asset_name not in {
         "lare-concept.svg", "lare-idle.svg", "lare-listening.svg",
         "lare-thinking.svg", "lare-speaking.svg", "lare-error.svg",
+        "logo.jpg", "favicon.ico", "apple-touch-icon.png", "og.png",
     }:
         return Response(content="Not found", status_code=404)
     path = BASE_DIR / "static" / "assets" / asset_name
     if not path.is_file():
         return Response(content="Not found", status_code=404)
-    return FileResponse(path, media_type="image/svg+xml", headers={"Cache-Control": "private, max-age=86400"})
+    media_type = {
+        ".svg": "image/svg+xml", ".ico": "image/x-icon",
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    }[path.suffix]
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.websocket("/{token}/ws")

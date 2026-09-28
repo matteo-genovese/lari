@@ -67,6 +67,27 @@ class MascotAssetRouteTests(unittest.TestCase):
                 response = self.get(f'/unit-test-token/assets/lare-{state}.svg')
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('image/svg+xml', response.headers['content-type'])
+    def test_branding_assets_are_served_with_the_installation_token(self):
+        from pathlib import Path
+        expected = {
+            "logo.jpg": "image/jpeg",
+            "favicon.ico": "image/x-icon",
+            "apple-touch-icon.png": "image/png",
+            "og.png": "image/png",
+        }
+        for name, media in expected.items():
+            with self.subTest(asset=name):
+                path = Path(server.BASE_DIR) / "static" / "assets" / name
+                self.assertTrue(path.is_file())
+                response = self.get(f"/unit-test-token/assets/{name}")
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.headers["content-type"].startswith(media))
+
+    def test_ui_head_references_the_favicon_assets(self):
+        response = self.get("/unit-test-token/")
+        self.assertIn(b"assets/favicon.ico", response.content)
+        self.assertIn(b"assets/apple-touch-icon.png", response.content)
+
     def test_asset_route_does_not_serve_arbitrary_files(self):
         response = self.get("/unit-test-token/assets/other.svg")
         self.assertEqual(response.status_code, 404)
