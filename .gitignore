@@ -9,6 +9,7 @@
 *.log
 *.wav
 .realtime_stt_usage.json*
+usage.json
 calibration/
 
 # Python environments and generated files
