@@ -1,7 +1,7 @@
 """Cancellable voice synthesis, sentence boundaries and ordered delivery."""
 from __future__ import annotations
+from . import protocol
 import asyncio
-import inspect
 import re
 from .config import get_settings
 _SETTINGS = get_settings()
@@ -116,9 +116,7 @@ class Reading:
 
     async def _synthesize(self, text):
         try:
-            # TEMP-P5: legacy test doubles return bytes synchronously.
-            audio = tts(text)
-            return await audio if inspect.isawaitable(audio) else audio
+            return await tts(text)
         except Exception:
             raise TTSUnavailable("tts non disponibile") from None
 
@@ -130,14 +128,14 @@ class Reading:
             if not self.valid():
                 return
             if segmented:
-                await self.send_json({"type": "audio_start", "turn": self.turn})
+                await self.send_json(protocol.audio_start(turn=self.turn))
             self.started = True
         if not self.valid():
             return
         if segmented:
-            await self.send_json({"type": "audio_chunk", "turn": self.turn, "seq": self.sequence})
+            await self.send_json(protocol.audio_chunk(turn=self.turn, seq=self.sequence))
         else:
-            await self.send_json({"type": "audio", "fmt": "mp3", "bytes": len(audio), "turn": self.turn})
+            await self.send_json(protocol.audio(fmt="mp3", bytes=len(audio), turn=self.turn))
         if not self.valid():
             return
         if self.send_audio is None:
@@ -176,7 +174,7 @@ class Reading:
         await self.queue.put(None)
         await self.worker
         if self.started and self.valid():
-            await self.send_json({"type": "audio_end", "turn": self.turn})
+            await self.send_json(protocol.audio_end(turn=self.turn))
 
     async def speak(self, text):
         if len(text) > STREAM_TEXT_MAX_CHARS:

@@ -5,11 +5,18 @@ import unittest
 from unittest.mock import AsyncMock, patch
 import httpx
 
-from lari import server
-from lari.server import Session
+from dataclasses import replace
+from lari import session as session_module
+from lari import tts as tts_module
+from lari.hermes import client as hermes_client
+from lari.config import load_settings
+from lari.session import Session
 
 
 class AgentDispatchTests(unittest.TestCase):
+    def setUp(self):
+        self.settings = load_settings({})
+
     def test_hermes_request_pins_provider_and_model(self):
         requests = []
         def handler(request):
@@ -20,15 +27,15 @@ class AgentDispatchTests(unittest.TestCase):
         def client(*args, **kwargs):
             return real_client(*args, transport=transport, **kwargs)
         with patch('httpx.AsyncClient', side_effect=client), \
-             patch.object(server, 'HERMES_PROVIDER', 'deepseek'), \
-             patch.object(server, 'HERMES_MODEL', 'deepseek-flash'):
-            out = asyncio.run(server.ask_hermes('ciao'))
+             patch.object(self, 'settings', replace(self.settings, hermes_provider='deepseek')), \
+             patch.object(self, 'settings', replace(self.settings, hermes_model='deepseek-flash')):
+            out = asyncio.run(hermes_client.ask_hermes('ciao', settings=self.settings))
         self.assertEqual(out, 'Ciao!')
         self.assertEqual(len(requests), 1)
         body = __import__('json').loads(requests[0].content)
         self.assertEqual((body['provider'], body['model']), ('deepseek', 'deepseek-flash'))
         self.assertEqual(body['model_options']['reasoning'], {'enabled': False})
-        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], server.SESSION_KEY)
+        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], self.settings.session_key)
 
     def test_session_continuity_uses_response_id_on_next_turn(self):
         requests = []
@@ -48,20 +55,20 @@ class AgentDispatchTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            session = Session(None, AsyncMock())
+            session = Session(None, AsyncMock(), settings=self.settings)
             first = await session._ask_hermes('ciao')
             second = await session._ask_hermes('come stai?')
             return first, second, session.hermes_session_id
 
         with patch.object(httpx, 'AsyncClient', side_effect=client), \
-             patch.object(server, 'HERMES_KEY', 'api-key'):
+             patch.object(self, 'settings', replace(self.settings, hermes_key='api-key')):
             first, second, session_id = asyncio.run(turns())
 
         self.assertEqual((first, second, session_id), ('prima', 'seconda', 'transcript-1'))
         self.assertNotIn('X-Hermes-Session-Id', requests[0].headers)
         self.assertEqual(requests[1].headers['X-Hermes-Session-Id'], 'transcript-1')
-        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], server.SESSION_KEY)
-        self.assertEqual(requests[1].headers['X-Hermes-Session-Key'], server.SESSION_KEY)
+        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], self.settings.session_key)
+        self.assertEqual(requests[1].headers['X-Hermes-Session-Key'], self.settings.session_key)
 
     def test_concurrent_sessions_do_not_share_transcript_ids(self):
         requests = []
@@ -83,7 +90,7 @@ class AgentDispatchTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            sessions = [Session(None, AsyncMock()), Session(None, AsyncMock())]
+            sessions = [Session(None, AsyncMock(), settings=self.settings), Session(None, AsyncMock(), settings=self.settings)]
             await asyncio.gather(
                 sessions[0]._ask_hermes('a-first'), sessions[1]._ask_hermes('b-first'))
             await asyncio.gather(
@@ -91,7 +98,7 @@ class AgentDispatchTests(unittest.TestCase):
             return sessions
 
         with patch.object(httpx, 'AsyncClient', side_effect=client), \
-             patch.object(server, 'HERMES_KEY', 'api-key'):
+             patch.object(self, 'settings', replace(self.settings, hermes_key='api-key')):
             sessions = asyncio.run(turns())
 
         self.assertEqual(sessions[0].hermes_session_id, 'transcript-a')
@@ -124,15 +131,15 @@ class AgentDispatchTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            session = Session(None, AsyncMock())
+            session = Session(None, AsyncMock(), settings=self.settings)
             await session._ask_hermes('prima')
-            with self.assertRaises(server.HermesContinuationError) as raised:
+            with self.assertRaises(hermes_client.HermesContinuationError) as raised:
                 await session._ask_hermes('seguito')
             return session, str(raised.exception)
 
         with patch.object(httpx, 'AsyncClient', side_effect=client), \
-             patch.object(server, 'HERMES_KEY', 'api-key'), \
-             patch.object(server, '_ask_cli', return_value='cli transcript') as cli:
+             patch.object(self, 'settings', replace(self.settings, hermes_key='api-key')), \
+             patch.object(hermes_client, '_ask_cli', return_value='cli transcript') as cli:
             session, error = asyncio.run(turns())
 
         self.assertEqual(error, 'continuazione Hermes non disponibile')
@@ -152,6 +159,9 @@ class _SplitStream(httpx.AsyncByteStream):
 
 
 class HermesStreamingTests(unittest.TestCase):
+    def setUp(self):
+        self.settings = load_settings({})
+
     @staticmethod
     def split_frame(frame, sizes=(1, 2, 5, 3)):
         raw = frame.encode()
@@ -208,12 +218,12 @@ class HermesStreamingTests(unittest.TestCase):
             async def on_approval(value):
                 approvals.append(value)
 
-            reply = await server.stream_hermes(
-                "ciao", on_delta=on_delta, on_approval=on_approval)
+            reply = await hermes_client.stream_hermes(
+                "ciao", on_delta=on_delta, on_approval=on_approval, settings=self.settings)
             return reply, deltas, approvals
 
         with patch.object(httpx, 'AsyncClient', side_effect=client), \
-             patch.object(server, 'HERMES_KEY', 'api-key'):
+             patch.object(self, 'settings', replace(self.settings, hermes_key='api-key')):
             reply, deltas, approvals = asyncio.run(run())
 
         self.assertEqual(reply, 'Ciao mondo')
@@ -226,7 +236,7 @@ class HermesStreamingTests(unittest.TestCase):
         self.assertEqual(body['stream'], True)
         self.assertEqual((body['provider'], body['model']), ('deepseek', 'deepseek-flash'))
         self.assertEqual(body['model_options']['reasoning'], {'enabled': False})
-        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], server.SESSION_KEY)
+        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], self.settings.session_key)
 
     def test_stream_continuity_uses_session_id_only_after_done(self):
         requests = []
@@ -253,9 +263,9 @@ class HermesStreamingTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            first = await server.stream_hermes('uno', on_delta=AsyncMock())
-            second = await server.stream_hermes(
-                'due', session_id=first.session_id, on_delta=AsyncMock())
+            first = await hermes_client.stream_hermes('uno', on_delta=AsyncMock(), settings=self.settings)
+            second = await hermes_client.stream_hermes(
+                'due', session_id=first.session_id, on_delta=AsyncMock(), settings=self.settings)
             return first, second
 
         with patch.object(httpx, 'AsyncClient', side_effect=client):
@@ -290,8 +300,8 @@ class HermesStreamingTests(unittest.TestCase):
                 deltas.append(value)
 
             with self.assertRaisesRegex(RuntimeError, 'terminato con errore'):
-                await server.stream_hermes(
-                    'ciao', session_id='prior-id', on_delta=on_delta)
+                await hermes_client.stream_hermes(
+                    'ciao', session_id='prior-id', on_delta=on_delta, settings=self.settings)
             return deltas
 
         with patch.object(httpx, 'AsyncClient', side_effect=client):
@@ -326,8 +336,8 @@ class HermesStreamingTests(unittest.TestCase):
                 deltas.append(value)
 
             with self.assertRaisesRegex(RuntimeError, r"finish_reason='length'"):
-                await server.stream_hermes(
-                    'ciao', session_id='prior-id', on_delta=on_delta)
+                await hermes_client.stream_hermes(
+                    'ciao', session_id='prior-id', on_delta=on_delta, settings=self.settings)
             return deltas
 
         with patch.object(httpx, 'AsyncClient', side_effect=client):
@@ -360,8 +370,8 @@ class HermesStreamingTests(unittest.TestCase):
         async def run():
             prior_id = 'prior-id'
             with self.assertRaisesRegex(RuntimeError, r'manca \[DONE\]'):
-                await server.stream_hermes(
-                    'ciao', session_id=prior_id, on_delta=AsyncMock())
+                await hermes_client.stream_hermes(
+                    'ciao', session_id=prior_id, on_delta=AsyncMock(), settings=self.settings)
             return prior_id
 
         with patch.object(httpx, 'AsyncClient', side_effect=client):
@@ -392,7 +402,7 @@ class HermesStreamingTests(unittest.TestCase):
 
         async def run():
             with self.assertRaisesRegex(RuntimeError, r"manca finish_reason='stop'"):
-                await server.stream_hermes('ciao', session_id='prior-id')
+                await hermes_client.stream_hermes('ciao', session_id='prior-id', settings=self.settings)
 
         with patch.object(httpx, 'AsyncClient', side_effect=client):
             asyncio.run(run())
@@ -412,8 +422,11 @@ class _AudioWebSocket:
 
 
 class SegmentedPlaybackTests(unittest.TestCase):
+    def setUp(self):
+        self.settings = load_settings({})
+
     def test_sentence_buffer_waits_for_words_and_splits_at_punctuation_or_limit(self):
-        buffer = server.SpeakableSentenceBuffer(max_chars=14, total_limit=100)
+        buffer = tts_module.SpeakableSentenceBuffer(max_chars=14, total_limit=100)
         self.assertEqual(buffer.feed('Ciao mondo'), [])
         self.assertEqual(buffer.feed('. Seconda '), ['Ciao mondo.'])
         self.assertEqual(buffer.feed('frase lunga qui'), ['Seconda frase'])
@@ -426,16 +439,16 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(value):
             sent.append(value)
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
             self.assertIsNone(session_id)
             await on_delta('Prima frase. ')
             await on_delta('Seconda frase.')
-            return server.HermesReply('Prima frase. Seconda frase.', 'done-id')
+            return hermes_client.HermesReply('Prima frase. Seconda frase.', 'done-id')
 
         async def run():
-            session = Session(ws, send_json)
-            with patch.object(server, 'stream_hermes', side_effect=fake_stream), \
-                 patch.object(server, 'tts', side_effect=[b'one', b'two']):
+            session = Session(ws, send_json, settings=self.settings)
+            with patch.object(session_module, 'stream_hermes', side_effect=fake_stream), \
+                 patch.object(tts_module, 'tts', new_callable=AsyncMock, side_effect=[b'one', b'two']):
                 result = await session._stream_hermes_speak('ciao', 4)
             return session, result
 
@@ -454,16 +467,16 @@ class SegmentedPlaybackTests(unittest.TestCase):
         ws = _AudioWebSocket()
         sent = []
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
             await on_delta('Una risposta.')
-            return server.HermesReply('Una risposta.', 'completed-id')
+            return hermes_client.HermesReply('Una risposta.', 'completed-id')
 
         async def run():
             async def send_json(value):
                 sent.append(value)
-            session = Session(ws, send_json)
-            with patch.object(server, 'stream_hermes', side_effect=fake_stream) as stream, \
-                 patch.object(server, 'tts', side_effect=RuntimeError('provider secret/path')):
+            session = Session(ws, send_json, settings=self.settings)
+            with patch.object(session_module, 'stream_hermes', side_effect=fake_stream) as stream, \
+                 patch.object(tts_module, 'tts', new_callable=AsyncMock, side_effect=RuntimeError('provider secret/path')):
                 result = await session._stream_hermes_speak('ciao', 5)
             return session, stream, result
 
@@ -478,7 +491,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         sent = []
         calls = []
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
             calls.append(text)
             await on_delta('Parziale.')
             raise RuntimeError('sensitive transport detail')
@@ -486,10 +499,10 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def run():
             async def send_json(value):
                 sent.append(value)
-            session = Session(ws, send_json)
-            with patch.object(server, 'stream_hermes', side_effect=fake_stream), \
-                 patch.object(server, 'tts', return_value=b'audio'):
-                with self.assertRaises(server.HermesStreamTurnError) as raised:
+            session = Session(ws, send_json, settings=self.settings)
+            with patch.object(session_module, 'stream_hermes', side_effect=fake_stream), \
+                 patch.object(tts_module, 'tts', new_callable=AsyncMock, return_value=b'audio'):
+                with self.assertRaises(hermes_client.HermesStreamTurnError) as raised:
                     await session._stream_hermes_speak('ciao', 6)
             return raised.exception
 
@@ -504,7 +517,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(_):
             pass
 
-        session = Session(None, send_json)
+        session = Session(None, send_json, settings=self.settings)
         async def run():
             session._begin_playback(9)
             self.assertFalse(session.mark_playback_done(turn=8, status='completed'))
@@ -524,7 +537,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(value):
             sent.append(value)
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
             stream_calls.append(text)
             await on_delta('Prima frase.')
             try:
@@ -534,7 +547,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
                 raise
 
         async def run():
-            session = Session(ws, send_json)
+            session = Session(ws, send_json, settings=self.settings)
             task = asyncio.create_task(session._stream_hermes_speak('ciao', 7))
             session.active_turn = 7
             session._turn_task = task
@@ -544,8 +557,8 @@ class SegmentedPlaybackTests(unittest.TestCase):
                 await task
             return session
 
-        with patch.object(server, 'stream_hermes', side_effect=fake_stream), \
-             patch.object(server, 'tts', return_value=b'audio'):
+        with patch.object(session_module, 'stream_hermes', side_effect=fake_stream), \
+             patch.object(tts_module, 'tts', new_callable=AsyncMock, return_value=b'audio'):
             session = asyncio.run(run())
 
         self.assertEqual(stream_calls, ['ciao'])
@@ -563,7 +576,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
 
     def test_stale_or_wrong_turn_interrupt_is_rejected_without_cancelling_current_turn(self):
         async def run():
-            session = Session(None, AsyncMock())
+            session = Session(None, AsyncMock(), settings=self.settings)
             task = asyncio.create_task(asyncio.Event().wait())
             session.active_turn = 12
             session._turn_task = task
@@ -584,7 +597,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(_):
             pass
 
-        session = Session(None, send_json)
+        session = Session(None, send_json, settings=self.settings)
         async def run():
             session._begin_playback(14)
             session._mark_playback_interrupted(14)

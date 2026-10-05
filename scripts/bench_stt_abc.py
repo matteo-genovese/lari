@@ -41,9 +41,10 @@ def main() -> int:
         if os.environ.get(key_env, "").strip():
             jobs.append((backend, lambda pcm, selected=backend: stt_backends.transcribe(pcm, selected)))
     if args.local:
-        from lari import server
-        jobs.extend((("vosk (local)", server.transcribe_vosk),
-                     ("faster-whisper (local)", server.transcribe)))
+        from lari.stt.vosk import transcribe_vosk
+        from lari.stt.local import transcribe
+        jobs.extend((("vosk (local)", transcribe_vosk),
+                     ("faster-whisper (local)", transcribe)))
     if not jobs:
         parser.error("no provider keys are set; use --local or configure a provider key")
 

@@ -8,33 +8,36 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 
-from lari import server
+from lari import audio as audio_module
+from lari import session as session_module
+from lari.wake import detector
+from lari.stt import dispatch
 from lari.wake.config import build_wake_config
 
 
 class VoskRoutingTests(unittest.TestCase):
     def setUp(self):
-        self.audio = np.zeros(server.SAMPLE_RATE, dtype=np.int16)
+        self.audio = np.zeros(audio_module.SAMPLE_RATE, dtype=np.int16)
 
     def test_unaddressed_speech_is_rejected_before_transcription(self):
-        with patch.object(server, "vosk_wake", return_value=False) as wake, \
-             patch.object(server, "transcribe_vosk") as transcribe:
-            result = server.decode_utterance(self.audio, followup=False, backend="vosk")
+        with patch.object(dispatch, "vosk_wake", return_value=False) as wake, \
+             patch.object(dispatch, "transcribe_vosk") as transcribe:
+            result = dispatch.decode_utterance(self.audio, followup=False, backend="vosk")
         self.assertIsNone(result)
         wake.assert_called_once()
         transcribe.assert_not_called()
 
     def test_configured_wake_phrase_is_removed_from_the_command(self):
-        transcript = f"{server.WAKE_PHRASE}, please help"
-        with patch.object(server, "vosk_wake", return_value=True), \
-             patch.object(server, "transcribe_vosk", return_value=transcript):
-            result = server.decode_utterance(self.audio, followup=False, backend="vosk")
+        transcript = f"{detector.WAKE_PHRASE}, please help"
+        with patch.object(dispatch, "vosk_wake", return_value=True), \
+             patch.object(dispatch, "transcribe_vosk", return_value=transcript):
+            result = dispatch.decode_utterance(self.audio, followup=False, backend="vosk")
         self.assertEqual(result, "please help")
 
     def test_followup_transcription_does_not_require_another_wake(self):
-        with patch.object(server, "vosk_wake") as wake, \
-             patch.object(server, "transcribe_vosk", return_value="follow-up question"):
-            result = server.decode_utterance(self.audio, followup=True, backend="vosk")
+        with patch.object(dispatch, "vosk_wake") as wake, \
+             patch.object(dispatch, "transcribe_vosk", return_value="follow-up question"):
+            result = dispatch.decode_utterance(self.audio, followup=True, backend="vosk")
         self.assertEqual(result, "follow-up question")
         wake.assert_not_called()
 
@@ -61,9 +64,9 @@ class VoskGrammarTests(unittest.TestCase):
         fake_vosk.KaldiRecognizer = FakeRecognizer
         fake_vosk.Model = lambda *args, **kwargs: object()
         fake_vosk.SetLogLevel = lambda *args: None
-        with patch.object(server, "get_vosk", return_value=object()), \
+        with patch.object(detector, "get_vosk", return_value=object()), \
              patch.dict(sys.modules, {"vosk": fake_vosk}):
-            self.assertTrue(server.vosk_wake(np.zeros(1600, dtype=np.int16), cfg))
+            self.assertTrue(detector.vosk_wake(np.zeros(1600, dtype=np.int16), cfg))
         self.assertEqual(captured["grammar"], json.dumps(list(cfg.grammar)))
 
 
@@ -74,14 +77,14 @@ class VoskSessionTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             sent.append(message)
 
-        session = server.Session(None, send)
-        session._record_utterance = AsyncMock(return_value=np.ones(server.SAMPLE_RATE, dtype=np.int16))
+        session = session_module.Session(None, send)
+        session._record_utterance = AsyncMock(return_value=np.ones(audio_module.SAMPLE_RATE, dtype=np.int16))
         session._speak = AsyncMock()
         session._record_usage = Mock()
-        with patch.object(server, "STT_BACKEND", "vosk"), \
-             patch.object(server, "save_turn_audio", return_value=Path("fake.wav")), \
-             patch.object(server, "decode_utterance", return_value="please help") as decode, \
-             patch.object(server, "stream_hermes", new_callable=AsyncMock, return_value="How can I help?") as agent:
+        with patch.object(dispatch, "STT_BACKEND", "vosk"), \
+             patch.object(session_module, "save_turn_audio", return_value=Path("fake.wav")), \
+             patch.object(dispatch, "decode_utterance", return_value="please help") as decode, \
+             patch.object(session_module, "stream_hermes", new_callable=AsyncMock, return_value="How can I help?") as agent:
             await session._on_wake()
         decode.assert_called_once()
         self.assertEqual(decode.call_args.args[1], False)

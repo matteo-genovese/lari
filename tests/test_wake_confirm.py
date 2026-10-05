@@ -8,7 +8,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from lari import server
+from lari import audio as audio_module
+from lari import session as session_module
+from lari.wake import confirm
+from lari.wake import runtime
 from lari.wake.config import build_wake_config
 
 LARI = build_wake_config("hey lari")
@@ -61,31 +64,31 @@ class ConfigurablePhraseVetoTests(unittest.TestCase):
 
 class SecondGateWiringTests(unittest.TestCase):
     def test_confirm_candidate_reads_only_the_candidate_prefix(self):
-        with patch.object(server, "transcribe_vosk", return_value="che tempo fa") as free, \
-             patch.object(server, "transcribe",
+        with patch.object(confirm, "transcribe_vosk", return_value="che tempo fa") as free, \
+             patch.object(confirm, "transcribe",
                           return_value="vorrei andare a fare shopping") as heard:
-            passed = server.confirm_candidate(np.full(16000 * 6, 3000, dtype=np.int16))
+            passed = confirm.confirm_candidate(np.full(16000 * 6, 3000, dtype=np.int16))
         self.assertFalse(passed)
         self.assertLessEqual(free.call_args.args[0].shape[0],
-                             int(2.5 * server.SAMPLE_RATE))
+                             int(2.5 * audio_module.SAMPLE_RATE))
         self.assertLessEqual(heard.call_args.args[0].shape[0],
-                             int(2.5 * server.SAMPLE_RATE))
+                             int(2.5 * audio_module.SAMPLE_RATE))
 
     def test_doubt_passes_without_running_the_slow_model(self):
-        with patch.object(server, "transcribe_vosk",
+        with patch.object(confirm, "transcribe_vosk",
                           return_value="Ehi Lare, che tempo fa"), \
-             patch.object(server, "transcribe",
+             patch.object(confirm, "transcribe",
                           side_effect=AssertionError("must not run")):
-            self.assertTrue(server.confirm_candidate(np.zeros(4000, dtype=np.int16)))
+            self.assertTrue(confirm.confirm_candidate(np.zeros(4000, dtype=np.int16)))
 
     def test_vetoed_candidate_never_schedules_a_turn(self):
         async def sender(_):
             pass
-        session = server.Session(None, sender)
-        with patch.object(server, "WAKE_CONFIRM", True), \
-             patch.object(server, "vosk_wake", return_value=True), \
-             patch.object(server, "confirm_candidate", return_value=False), \
-             patch.object(server.asyncio, "run_coroutine_threadsafe") as schedule:
+        session = session_module.Session(None, sender)
+        with patch.object(runtime, "WAKE_CONFIRM", True), \
+             patch.object(runtime, "vosk_wake", return_value=True), \
+             patch.object(runtime, "confirm_candidate", return_value=False), \
+             patch.object(runtime.asyncio, "run_coroutine_threadsafe") as schedule:
             started = session._launch_local_candidate(
                 np.zeros(3200, dtype=np.int16).tobytes())
         self.assertFalse(started)
@@ -94,16 +97,17 @@ class SecondGateWiringTests(unittest.TestCase):
     def test_disabled_second_gate_keeps_the_single_gate_path(self):
         async def sender(_):
             pass
-        session = server.Session(None, sender)
-        with patch.object(server, "WAKE_CONFIRM", False), \
-             patch.object(server, "vosk_wake", return_value=True), \
-             patch.object(server, "confirm_candidate",
+        session = session_module.Session(None, sender)
+        with patch.object(runtime, "WAKE_CONFIRM", False), \
+             patch.object(runtime, "vosk_wake", return_value=True), \
+             patch.object(runtime, "confirm_candidate",
                           side_effect=AssertionError("must not run")), \
-             patch.object(server.asyncio, "run_coroutine_threadsafe") as schedule:
+             patch.object(runtime.asyncio, "run_coroutine_threadsafe") as schedule:
             started = session._launch_local_candidate(
                 np.zeros(3200, dtype=np.int16).tobytes())
         self.assertTrue(started)
         schedule.assert_called_once()
+        schedule.call_args.args[0].close()
 
 
 if __name__ == "__main__":

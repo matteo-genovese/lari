@@ -1,5 +1,6 @@
 """Microphone buffering, adaptive VAD, endpointing and private diagnostics."""
 from __future__ import annotations
+from . import protocol
 import asyncio
 import logging
 import os
@@ -110,7 +111,7 @@ class SessionAudio:
             mode = "realtime" if sent else "local"
             if mode != reported_stt_mode:
                 reported_stt_mode = mode
-                await self.send_json({"type": "stt_status", "mode": mode, "turn": self.turn})
+                await self.send_json(protocol.stt_status(mode=mode, turn=self.turn))
 
         if realtime is not None and prelude:
             # The local wake detector fired before recording began. Sending this

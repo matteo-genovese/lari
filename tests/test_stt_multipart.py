@@ -4,7 +4,6 @@ The mocked-transport unit tests missed a TypeError thrown by httpx's own
 multipart encoder ("sequence item 1: expected a bytes-like object, tuple
 found"). This exercises the actual encoder with MockTransport — no network.
 """
-import os
 import unittest
 from unittest.mock import patch
 
@@ -18,11 +17,6 @@ PCM = np.arange(3200, dtype=np.int16)
 
 
 class MultipartEncodingTests(unittest.TestCase):
-    def setUp(self):
-        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
-        settings.start()
-        self.addCleanup(settings.stop)
-
     def _run(self, backend, response_json):
         captured = {}
 
@@ -42,9 +36,9 @@ class MultipartEncodingTests(unittest.TestCase):
             'ELEVENLABS_API_KEY': 'k-el', 'GROQ_API_KEY': 'k-gq',
             'OPENAI_API_KEY': 'k-oa',
         }
-        with patch.dict(os.environ, env), \
-             patch('httpx.Client', client_factory):
-            text = stt_backends.transcribe(PCM, backend)
+        settings = load_settings(env)
+        with patch('httpx.Client', client_factory):
+            text = stt_backends.transcribe(PCM, backend, settings=settings)
         self.assertEqual(text, 'trascrizione')
         self.assertIn('multipart/form-data', captured['content_type'])
         if backend == 'elevenlabs':

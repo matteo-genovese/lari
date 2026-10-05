@@ -1,4 +1,7 @@
 """Telemetry reports provider audio, not inferred mascot states."""
+from lari import session as session_module
+from lari.stt import dispatch
+from lari.stt import realtime
 import asyncio
 import time
 import unittest
@@ -6,7 +9,6 @@ from unittest.mock import AsyncMock, patch
 
 import numpy as np
 
-from lari import server
 
 
 class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
@@ -24,7 +26,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
                 self.chunks.append(chunk)
                 return True
 
-        session = server.Session(None, send)
+        session = session_module.Session(None, send)
         session.turn = 7
         prelude = np.full(1600, 3000, dtype=np.int16).tobytes()
         quiet = np.zeros(1600, dtype=np.int16).tobytes()
@@ -47,7 +49,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
             async def send_audio(self, _chunk):
                 return False
 
-        session = server.Session(None, send)
+        session = session_module.Session(None, send)
         session.turn = 8
         prelude = np.full(1600, 3000, dtype=np.int16).tobytes()
         session.recv_queue.put_nowait(None)
@@ -62,11 +64,11 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
 
-        session = server.Session(None, send)
+        session = session_module.Session(None, send)
         session._record_utterance = AsyncMock(return_value=None)
-        with patch.object(server, "STT_BACKEND", server.stt_backends.REALTIME_BACKEND), \
-             patch.object(server.stt_backends.RealtimeScribe, "connect", new_callable=AsyncMock,
-                          side_effect=server.stt_backends.RealtimeUnavailable("unavailable")):
+        with patch.object(dispatch, "STT_BACKEND", realtime.REALTIME_BACKEND), \
+             patch.object(realtime.RealtimeScribe, "connect", new_callable=AsyncMock,
+                          side_effect=realtime.RealtimeUnavailable("unavailable")):
             await session._on_wake(local_wake_confirmed=True)
         self.assertEqual([m for m in messages if m.get("type") == "stt_status"], [
             {"type": "stt_status", "mode": "local", "turn": 1},
@@ -78,12 +80,12 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
 
-        session = server.Session(None, send)
+        session = session_module.Session(None, send)
         session.conversation_until = time.monotonic() + 30
         session._record_utterance = AsyncMock(return_value=None)
-        with patch.object(server, "STT_BACKEND", server.stt_backends.REALTIME_BACKEND), \
-             patch.object(server.stt_backends.RealtimeScribe, "connect", new_callable=AsyncMock,
-                          side_effect=server.stt_backends.RealtimeUnavailable("unavailable")):
+        with patch.object(dispatch, "STT_BACKEND", realtime.REALTIME_BACKEND), \
+             patch.object(realtime.RealtimeScribe, "connect", new_callable=AsyncMock,
+                          side_effect=realtime.RealtimeUnavailable("unavailable")):
             await session._on_wake(local_wake_confirmed=False)
         waking = next(m for m in messages if m.get("type") == "state" and m.get("state") == "waking")
         self.assertIs(waking.get("followup"), True)

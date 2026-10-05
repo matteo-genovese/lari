@@ -4,7 +4,7 @@
 
 # Lari
 
-**Lari** is a self-hosted voice bridge for [Hermes](https://github.com/NousResearch/hermes-agent). A phone browser acts as a microphone and speaker; Hermes remains the assistant brain. Each satellite is a **Lare**, represented by the five-state flame mascot. A dedicated hardware satellite is future work.
+**Lari** — **A self-hosted hands-free voice satellite for Hermes**. It connects to [Hermes](https://github.com/NousResearch/hermes-agent). A phone browser acts as a microphone and speaker; Hermes remains the assistant brain. Each satellite is a **Lare**, represented by the five-state flame mascot. A dedicated hardware satellite is future work.
 
 > **Wake phrase:** one setting drives the whole pipeline. `LARI_WAKE_PHRASE` (default `ehi lari`, or `hey lari` for a non-Italian `LARI_STT_LANG`) rebuilds the command regex, the Vosk wake grammar, the junk cleanup and the provider keyterms automatically. The environment-variable prefix was renamed to `LARI_*`. Existing installs must rename the keys in their private `.env`, keeping values unchanged. Test fixtures are synthetic: real-voice calibration data is per-installation and never committed. A new phrase still deserves real-voice calibration: replay real recordings through the gate and add the observed ASR variants to `LARI_WAKE_ALIASES`.
 
@@ -16,12 +16,68 @@ In the project artwork the Lare rides on the shoulder of Hermes — the satellit
 
 ## How it works
 
-```text
-Phone browser ── 16 kHz PCM via WebSocket ──► local wake gate → VAD → STT
-Phone speaker ◄──── segmented edge-tts audio ◄──── Hermes API (same conversation)
+```mermaid
+flowchart LR
+    B[Browser / Lare] -->|PCM16 WebSocket: 16 kHz mono int16| L
+    subgraph L[Lari — voice layer]
+        W[Local wake] --> A[VAD / audio] --> S[STT]
+        S --> O[Session orchestration] --> I[Hermes integration]
+        O --> T[TTS]
+    end
+    I --> H[Hermes]
+    H --> M[Models + tools]
+    H --> I
+    T -->|MP3 WebSocket| B
 ```
 
+Lari does not contain its own assistant or LLM backend. Every assistant request
+passes through Hermes, including the optional Hermes CLI fallback. Hermes owns
+model selection, conversation execution and tools. Local wake, STT and TTS
+components exist because Lari is the voice layer; configured cloud speech
+providers serve that same role. A future client can use the same WebSocket
+protocol. The browser/PWA remains the reference satellite.
+
 The browser displays **idle, listening, thinking, speaking and error** using individually derived animated SVG assets; `scripts/derive_mascot_states.py` rebuilds them from the editable animated source `static/assets/lare-concept.svg` (which doubles as the state-cycle demo at `/<token>/assets/lare-concept.svg`). Each asset carries only its own state's motion. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge does not open a provider connection until the local wake gate confirms the utterance.
+
+## WebSocket protocol
+
+Connect to `/<token>/ws`. Outgoing text frames are JSON objects with `type`;
+all names and fields below preserve the browser's existing contract. Semantic
+states are `idle`, `listening`, `waking`, `recording`, `transcribing`, `thinking`,
+`speaking`, `error`: they describe the interaction, without exposing which STT
+engine, SSE connection or TTS request is active. `stt_status` separately reports
+whether captured audio was sent to realtime STT or kept local.
+
+| Lari → browser type | Fields | Meaning |
+| --- | --- | --- |
+| `state` | `state`; optional `turn`, `followup`, `phrase`, `provider`, `voice`, `sensitivity`, `confirm_frames`, `interrupted`, `note`, `error` | Semantic state; initial frame includes wake/voice configuration |
+| `partial_transcript` | `text`, `turn` | Provisional transcript; empty text clears it |
+| `transcript` | `text`, `turn`; optional `command` | Final user text, optionally wake-stripped |
+| `reply` | `text`, `turn` | Assistant reply from Hermes |
+| `stt_status` | `mode` (`local` or `realtime`), `turn` | Actual audio transport status |
+| `audio_start` | `turn` | Start segmented MP3 playback |
+| `audio_chunk` | `turn`, `seq` | Metadata for the next binary MP3 frame, ordered from zero |
+| `audio_end` | `turn` | No further segments for this reading |
+| `audio` | `fmt` (`mp3`), `bytes`, `turn` | Metadata for the next single binary MP3 frame |
+| `followup` | `seconds`; optional `interrupted` | Local conversation window without a new wake phrase |
+| `interrupt_ack` | `turn`, `status` (`interrupted`), `echo_tail_ms` | Active turn cancelled; wait for the speaker echo tail |
+| `interrupt_rejected` | `turn` | No matching active turn to interrupt |
+| `pong` | `state` | Liveness response with semantic state |
+| `approval` | `turn`, `approval` | Hermes approval event |
+| `fatal` | `error` | Session cannot start its wake engine |
+
+| Browser → Lari | Fields / format | Meaning |
+| --- | --- | --- |
+| Binary audio | PCM16 little-endian, 16 kHz mono int16 | Microphone frames |
+| `ping` | JSON `type` | Request `pong` |
+| `playback_done` | JSON `type`, `turn`, optional `status` (`completed` by default or `failed`) | Acknowledge actual browser playback; completion opens follow-up |
+| `interrupt` | JSON `type`, `turn` | Cancel the matching active turn |
+| `diag` | JSON `type`; `ctx`, `rate`, `mic`, `frames`, `vis`, `raw` | Browser microphone diagnostics |
+
+Turn identifiers prevent stale playback/interruption events from affecting a
+new turn. Legacy playback acknowledgements without `turn` remain accepted.
+Unknown controls and malformed JSON are ignored. All outgoing messages are
+constructed in `lari/protocol.py` with named parameters.
 
 ## Quick start
 
@@ -89,7 +145,7 @@ Add the page to your home screen (PWA): the manifest and service worker make it 
 
 ```bash
 .venv/bin/python -m unittest discover -q
-.venv/bin/python -m py_compile lari/server.py lari/stt_backends.py lari/wake_config.py
+.venv/bin/python -m py_compile lari/*.py lari/*/*.py
 ```
 
 `scripts/bench_wake_gate.py` is the second gate's A/B benchmark: it replays real recordings through the candidate gate and the veto and reports the three decision numbers (false negatives on real wakes, added latency, candidate seconds kept away from the paid provider).

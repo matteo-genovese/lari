@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 
+from lari.stt import dispatch
+from lari.stt import providers
 from lari.stt import realtime as stt_backends
 from lari.config import load_settings
 
@@ -49,11 +51,6 @@ class FakeWebSocket:
 
 
 class RealtimeTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
-        settings.start()
-        self.addCleanup(settings.stop)
-
     async def test_success_sends_pcm_partial_and_one_commit(self):
         fake = FakeWebSocket([
             {"message_type": "session_started"},
@@ -70,10 +67,11 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         async def connect(_url, **_kwargs):
             return fake
 
-        with patch.dict("os.environ", {"ELEVENLABS_API_KEY": "test-key"}), \
-             patch.object(stt_backends.websockets, "connect", connect):
+        settings = load_settings({"ELEVENLABS_API_KEY": "test-key"})
+        with patch.object(stt_backends.websockets, "connect", connect):
             session = await stt_backends.RealtimeScribe.connect(
-                on_partial=on_partial, budget=budget
+                on_partial=on_partial, budget=budget,
+                settings=settings,
             )
             self.assertTrue(await session.send_audio(np.arange(1600, dtype=np.int16).tobytes()))
             # Let the reader deliver the already queued partial event.
@@ -126,9 +124,9 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         async def connect(_url, **_kwargs):
             return fake
 
-        with patch.dict("os.environ", {"ELEVENLABS_API_KEY": "test-key"}), \
-             patch.object(stt_backends.websockets, "connect", connect):
-            session = await stt_backends.RealtimeScribe.connect(budget=budget)
+        settings = load_settings({"ELEVENLABS_API_KEY": "test-key"})
+        with patch.object(stt_backends.websockets, "connect", connect):
+            session = await stt_backends.RealtimeScribe.connect(budget=budget, settings=settings)
             await session.send_audio(np.arange(1600, dtype=np.int16).tobytes())
             text = await session.finish()
 
@@ -150,10 +148,10 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         async def connect(_url, **_kwargs):
             return fake
 
-        with patch.dict("os.environ", {"ELEVENLABS_API_KEY": "test-key"}), \
-             patch.object(stt_backends.websockets, "connect", connect):
+        settings = load_settings({"ELEVENLABS_API_KEY": "test-key"})
+        with patch.object(stt_backends.websockets, "connect", connect):
             with self.assertRaises(stt_backends.RealtimeUnavailable):
-                await stt_backends.RealtimeScribe.connect(budget=budget)
+                await stt_backends.RealtimeScribe.connect(budget=budget, settings=settings)
 
         # A failed realtime session is not an assistant turn; the caller alone
         # decides whether to invoke the existing batch backend.
@@ -167,12 +165,13 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             captured.update(url=url, kwargs=kwargs)
             return fake
 
-        with patch.dict("os.environ", {"ELEVENLABS_API_KEY": "secret-key"}), \
-             patch.object(stt_backends.websockets, "connect", connect):
+        settings = load_settings({"ELEVENLABS_API_KEY": "secret-key"})
+        with patch.object(stt_backends.websockets, "connect", connect):
             session = await stt_backends.RealtimeScribe.connect(
                 budget=stt_backends.DailyAudioBudget(
                     path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-                )
+                ),
+                settings=settings,
             )
             await session.close()
 
@@ -196,12 +195,13 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         logger = logging.getLogger()
         logger.addHandler(handler)
         try:
-            with patch.dict("os.environ", {"ELEVENLABS_API_KEY": secret}), \
-                 patch.object(stt_backends.websockets, "connect", connect):
+            settings = load_settings({"ELEVENLABS_API_KEY": secret})
+            with patch.object(stt_backends.websockets, "connect", connect):
                 session = await stt_backends.RealtimeScribe.connect(
                     budget=stt_backends.DailyAudioBudget(
                         path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-                    )
+                    ),
+                    settings=settings,
                 )
                 await session.close()
         finally:
@@ -217,14 +217,15 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         async def connect(_url, **_kwargs):
             return fake
 
-        with patch.dict("os.environ", {"ELEVENLABS_API_KEY": "test-key"}), \
-             patch.object(stt_backends.websockets, "connect", connect), \
+        settings = load_settings({"ELEVENLABS_API_KEY": "test-key"})
+        with patch.object(stt_backends.websockets, "connect", connect), \
              patch.object(stt_backends, "REALTIME_SESSION_TIMEOUT_S", 0.01):
             with self.assertRaises(stt_backends.RealtimeUnavailable):
                 await stt_backends.RealtimeScribe.connect(
                     budget=stt_backends.DailyAudioBudget(
                         path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-                    )
+                    ),
+                    settings=settings,
                 )
 
         self.assertEqual(fake.sent, [])
@@ -284,30 +285,29 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             async def connect(_url, **_kwargs):
                 return fake
 
-            with patch.dict("os.environ", {"ELEVENLABS_API_KEY": "test-key"}), \
-                 patch.object(stt_backends.websockets, "connect", connect):
+            settings = load_settings({"ELEVENLABS_API_KEY": "test-key"})
+            with patch.object(stt_backends.websockets, "connect", connect):
                 with self.assertRaises(stt_backends.RealtimeUnavailable):
-                    await stt_backends.RealtimeScribe.connect(budget=budget)
+                    await stt_backends.RealtimeScribe.connect(budget=budget, settings=settings)
             self.assertEqual(fake.sent, [])
 
     async def test_realtime_failure_falls_back_local_without_batch(self):
-        from lari import server
 
         pcm = np.zeros(1600, dtype=np.int16)
         local = Mock(return_value="Ehi Lari, local")
         successful = AsyncMock(return_value="Ehi Lari, realtime")
         failed = AsyncMock(side_effect=stt_backends.RealtimeUnavailable())
         paid_batch = Mock(side_effect=AssertionError("paid batch fallback called"))
-        with patch.object(server, "_transcribe_local_fallback", local), \
-             patch.object(server.stt_backends, "transcribe", paid_batch):
+        with patch.object(dispatch, "_transcribe_local_fallback", local), \
+             patch.object(providers, "transcribe", paid_batch):
             self.assertEqual(
-                await server.transcribe_realtime_or_batch(pcm, type("R", (), {
+                await dispatch.transcribe_realtime_or_batch(pcm, type("R", (), {
                     "finish": successful,
                 })(), 1),
                 "Ehi Lari, realtime",
             )
             self.assertEqual(
-                await server.transcribe_realtime_or_batch(pcm, type("R", (), {
+                await dispatch.transcribe_realtime_or_batch(pcm, type("R", (), {
                     "finish": failed,
                 })(), 2),
                 "Ehi Lari, local",
@@ -316,14 +316,13 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         paid_batch.assert_not_called()
 
     async def test_realtime_provider_failure_never_uses_paid_batch(self):
-        from lari import server
 
         pcm = np.zeros(1600, dtype=np.int16)
         local = Mock(return_value="testo locale")
         paid_batch = Mock(side_effect=AssertionError("paid batch fallback called"))
-        with patch.object(server, "_transcribe_local_fallback", local), \
-             patch.object(server.stt_backends, "transcribe", paid_batch):
-            text, used_batch = await server._transcribe_realtime_or_batch(
+        with patch.object(dispatch, "_transcribe_local_fallback", local), \
+             patch.object(providers, "transcribe", paid_batch):
+            text, used_batch = await dispatch._transcribe_realtime_or_batch(
                 pcm, None, 9, start_failed=True
             )
 

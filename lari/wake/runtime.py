@@ -1,4 +1,5 @@
 """Per-satellite wake frame processing; no application-global event loop."""
+from .. import protocol
 import asyncio
 import logging
 import queue
@@ -26,7 +27,7 @@ class WakeWorker:
             except Exception:
                 log.exception("impossibile creare l'engine wake")
                 asyncio.run_coroutine_threadsafe(
-                    self.send_json({"type": "fatal", "error": "wake engine startup failed"}), self.loop
+                    self.send_json(protocol.fatal(error="wake engine startup failed")), self.loop
                 )
                 return
         else:

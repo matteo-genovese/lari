@@ -11,9 +11,10 @@ import unittest
 
 import numpy as np
 
-from lari import server
 
-SR = server.SAMPLE_RATE
+from lari import audio as audio_module
+from lari import session as session_module
+SR = audio_module.SAMPLE_RATE
 
 
 def _chunk(rms: float, seconds: float = 0.1) -> bytes:
@@ -22,8 +23,8 @@ def _chunk(rms: float, seconds: float = 0.1) -> bytes:
     return np.full(n, int(min(32767.0, rms)), dtype=np.int16).tobytes()
 
 
-def _session(noise_floor: float = 363.0) -> server.Session:
-    s = server.Session.__new__(server.Session)
+def _session(noise_floor: float = 363.0) -> session_module.Session:
+    s = session_module.Session.__new__(session_module.Session)
     s.recv_queue = queue.Queue()
     s.noise_floor = noise_floor
     s.last_silent = time.time() - 0.5    # recent silence, as at real speech onset

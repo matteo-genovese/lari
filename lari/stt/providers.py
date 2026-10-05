@@ -125,7 +125,3 @@ def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings | None = Non
     if not text:
         raise RuntimeError(f"STT {backend} ha restituito testo vuoto")
     return text
-
-# TEMP-P5: legacy combined backend API.
-from .realtime import (RealtimeScribe, RealtimeUnavailable, DailyAudioBudget,
-                       realtime_daily_budget, REALTIME_BACKEND, REALTIME_KEYTERMS)

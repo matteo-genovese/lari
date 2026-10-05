@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lari import config, usage
-from lari.stt import providers as stt_backends
+from lari.stt import providers as stt_backends, realtime
 
 
 class SettingsTests(unittest.TestCase):
@@ -117,7 +117,7 @@ class SettingsTests(unittest.TestCase):
             "GROQ_API_KEY": "injected-key", "LARI_GROQ_MODEL": "custom-model",
         })
         self.assertEqual(usage.UsageLedger(settings=settings).path, Path("/tmp/config-usage.json"))
-        budget = stt_backends.DailyAudioBudget(settings=settings)
+        budget = realtime.DailyAudioBudget(settings=settings)
         self.assertEqual(budget.path, Path("/tmp/config-realtime.json"))
         self.assertEqual(budget.daily_seconds, 120)
         with patch.object(stt_backends, "_post_multipart", return_value={"text": "ciao"}) as post:

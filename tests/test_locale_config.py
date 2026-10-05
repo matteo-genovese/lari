@@ -1,30 +1,17 @@
 """The UI brand must not silently change the known-working voice configuration."""
-import json
-import os
-import subprocess
-import sys
+
 import unittest
 from pathlib import Path
+from lari.config import load_settings
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def inspect_config(extra):
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("LARI_", "BRAND_"))}
-    env.update(extra)
-    code = (
-        "import json, pathlib; from lari import server; "
-        "print(json.dumps({'wake': server.WAKE_PHRASE, "
-        "'backend': server.STT_BACKEND, "
-        "'vosk': server.VOSK_MODEL_DIR.name, "
-        "'aliases': list(server.WAKE_CONFIG.aliases), "
-        "'root': str(server.HERMES_ROOT)}))"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code], cwd=ROOT, env=env,
-        text=True, capture_output=True, check=True,
-    )
-    return json.loads(result.stdout.splitlines()[-1])
+    settings = load_settings(extra)
+    return {"wake": settings.wake_phrase, "backend": settings.stt_backend,
+            "vosk": settings.vosk_model_dir.name, "aliases": list(settings.wake_config.aliases),
+            "root": str(settings.hermes_root)}
 
 
 class WorkingVoiceConfigTests(unittest.TestCase):
@@ -36,18 +23,8 @@ class WorkingVoiceConfigTests(unittest.TestCase):
     def test_hermes_root_can_be_selected_without_a_personal_home_path(self):
         import tempfile
         with tempfile.TemporaryDirectory() as custom_root:
-            env = {k: v for k, v in os.environ.items() if not k.startswith(("LARI_", "BRAND_"))}
-            env["LARI_HERMES_ROOT"] = custom_root
-            code = (
-                "import sys,types; sys.modules['tools']=types.ModuleType('tools'); "
-                "m=types.ModuleType('tools.wake_word'); m._build_engine=None; "
-                "sys.modules['tools.wake_word']=m; from lari import server; print(server.HERMES_ROOT)"
-            )
-            result = subprocess.run(
-                [sys.executable, "-c", code], cwd=ROOT, env=env,
-                text=True, capture_output=True, check=True,
-            )
-            self.assertEqual(result.stdout.strip(), custom_root)
+            settings = load_settings({"LARI_HERMES_ROOT": custom_root})
+            self.assertEqual(str(settings.hermes_root), custom_root)
 
     def test_default_wake_phrase_follows_the_language(self):
         self.assertEqual(inspect_config({"LARI_STT_LANG": "it"})["wake"], "ehi lari")

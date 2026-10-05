@@ -8,7 +8,9 @@ import wave
 
 from functools import partial
 
-from lari.server import wake_command as _wake_command, save_turn_audio, Session, resolve_command as _resolve_command, resolve_vosk_command
+from lari.wake.detector import wake_command as _wake_command, resolve_command as _resolve_command, resolve_vosk_command
+from lari.audio import save_turn_audio
+from lari.session import Session
 from lari.wake.config import build_wake_config
 
 # Parity suite for the tuned live phrase: every observed variant must survive

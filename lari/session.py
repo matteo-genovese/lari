@@ -1,5 +1,6 @@
 """Per-satellite semantic state, turn ownership and playback orchestration."""
 from __future__ import annotations
+from . import protocol
 import asyncio
 import logging
 import queue
@@ -7,7 +8,7 @@ import threading
 from threading import Thread
 import time
 from fastapi import WebSocket
-from .config import get_settings
+from .config import Settings, get_settings
 from .audio import SessionAudio, save_turn_audio
 from .wake.runtime import WakeWorker
 from .stt import dispatch as _dispatch
@@ -29,7 +30,8 @@ MIN_SPEECH_S = _SETTINGS.min_speech_s
 class Session(SessionAudio, WakeWorker):
     """State of one satellite connection (one device = one session)."""
 
-    def __init__(self, ws: WebSocket, send_json):
+    def __init__(self, ws: WebSocket, send_json, *, settings: Settings | None = None):
+        self.settings = settings or _SETTINGS
         self.ws = ws
         self._send_json = send_json
         self.engine = None
@@ -65,6 +67,17 @@ class Session(SessionAudio, WakeWorker):
         except RuntimeError:
             self.loop = None
 
+    async def start(self):
+        """Start local wake monitoring and announce the satellite configuration."""
+        self.worker = Thread(target=self.wake_worker, daemon=True, name="wake-worker")
+        self.worker.start()
+        await self.send_json(protocol.state(
+            state="listening", phrase=self.settings.wake_config.display,
+            provider=self.settings.wake_provider, voice=self.settings.tts_voice,
+            sensitivity=self.settings.wake_sensitivity,
+            confirm_frames=self.settings.confirm_frames,
+        ))
+
     async def send_json(self, data):
         turn = data.get("turn")
         if self.stop.is_set() or (turn is not None and self.turn and
@@ -82,7 +95,7 @@ class Session(SessionAudio, WakeWorker):
     async def playback_completed(self, turn_id, status="completed") -> bool:
         accepted = self.mark_playback_done(turn=turn_id, status=status)
         if accepted and status == "completed":
-            await self.send_json({"type": "followup", "seconds": FOLLOWUP_S})
+            await self.send_json(protocol.followup(seconds=FOLLOWUP_S))
         return accepted
 
     async def interrupt(self, turn=None) -> bool:
@@ -127,14 +140,16 @@ class Session(SessionAudio, WakeWorker):
         if self.engine is not None:
             self.engine.close()
             self.engine = None
+        try:
+            self.save_calibration()
+        except Exception:
+            log.exception("salvataggio calibrazione fallito")
 
     async def _send_partial(self, text: str, turn: int):
         if not self._reading_valid(turn):
             return
         self._partial_turn = turn
-        await self.send_json({
-            "type": "partial_transcript", "text": text, "turn": turn,
-        })
+        await self.send_json(protocol.partial_transcript(text=text, turn=turn))
 
     async def _clear_partial(self, turn: int):
         """Remove the browser's in-progress transcript after a discarded turn."""
@@ -142,19 +157,14 @@ class Session(SessionAudio, WakeWorker):
             return
         partial_turn = self._partial_turn
         self._partial_turn = None
-        await self.send_json({
-            "type": "partial_transcript", "text": "", "turn": partial_turn,
-        })
+        await self.send_json(protocol.partial_transcript(text="", turn=partial_turn))
 
     async def _ask_hermes(self, text: str) -> str:
         """Ask Hermes and update only this WebSocket's transcript id."""
         turn = self.turn
-        if self.hermes_session_id is None:
-            # Keep the no-argument call compatible with existing test doubles and
-            # first-turn callers.
-            result = await ask_hermes(text)
-        else:
-            result = await ask_hermes(text, session_id=self.hermes_session_id)
+        result = await ask_hermes(
+            text, settings=self.settings, session_id=self.hermes_session_id,
+        )
         returned_id = getattr(result, "session_id", None)
         if returned_id and self.turn == turn and not self.stop.is_set():
             self.hermes_session_id = returned_id
@@ -247,9 +257,7 @@ class Session(SessionAudio, WakeWorker):
                 return
             self.conversation_until = time.monotonic() + FOLLOWUP_S
             log.info("turno %d: follow-up post-interruzione attivo per %.0fs", turn, FOLLOWUP_S)
-            await self.send_json({
-                "type": "followup", "seconds": FOLLOWUP_S, "interrupted": True,
-            })
+            await self.send_json(protocol.followup(seconds=FOLLOWUP_S, interrupted=True))
         except asyncio.CancelledError:
             raise
         finally:
@@ -281,10 +289,7 @@ class Session(SessionAudio, WakeWorker):
         except Exception:
             log.exception("errore durante l'interruzione del turno %s", current_turn)
 
-        await self.send_json({
-            "type": "interrupt_ack", "turn": current_turn,
-            "status": "interrupted", "echo_tail_ms": int(ECHO_MUTE_S * 1000),
-        })
+        await self.send_json(protocol.interrupt_ack(turn=current_turn, status="interrupted", echo_tail_ms=int(ECHO_MUTE_S * 1000)))
         await self.set_state("listening", turn=current_turn, interrupted=True)
         if self._interrupted_followup_task is not None:
             self._interrupted_followup_task.cancel()
@@ -326,12 +331,12 @@ class Session(SessionAudio, WakeWorker):
 
         async def on_approval(event):
             if self._reading_valid(turn):
-                await self.send_json({"type": "approval", "turn": turn, "approval": event})
+                await self.send_json(protocol.approval(turn=turn, approval=event))
 
         try:
             try:
                 result = await stream_hermes(
-                    text, session_id=self.hermes_session_id,
+                    text, settings=self.settings, session_id=self.hermes_session_id,
                     on_delta=reading.feed, on_approval=on_approval,
                 )
             except Exception as exc:
@@ -357,7 +362,7 @@ class Session(SessionAudio, WakeWorker):
                                  not self._same_turn(turn, self.turn)):
             return
         self.state = state
-        await self.send_json({"type": "state", "state": state, **extra})
+        await self.send_json(protocol.state(state=state, **extra))
 
     async def _on_wake(self, initial_pcm: bytes = b"",
                        local_wake_confirmed: bool = False):
@@ -415,7 +420,7 @@ class Session(SessionAudio, WakeWorker):
         )
         self._realtime = realtime
         if realtime_start_failed:
-            await self.send_json({"type": "stt_status", "mode": "local", "turn": turn})
+            await self.send_json(protocol.stt_status(mode="local", turn=turn))
         try:
             pcm = await self._record_utterance(prelude, realtime=realtime)
         except Exception:
@@ -470,10 +475,10 @@ class Session(SessionAudio, WakeWorker):
             self.conversation_until = 0.0  # next turn only after playback
             log.info("comando %s: %r", "follow-up" if followup_at_start else "wake", text[:120])
             self._partial_turn = None
-            await self.send_json({"type": "transcript", "text": text, "turn": turn, "command": True})
+            await self.send_json(protocol.transcript(text=text, turn=turn, command=True))
         else:
             self._partial_turn = None
-            await self.send_json({"type": "transcript", "text": text, "turn": turn})
+            await self.send_json(protocol.transcript(text=text, turn=turn))
 
         await self.set_state("thinking", turn=turn)
         stream_had_audio = False
@@ -490,7 +495,7 @@ class Session(SessionAudio, WakeWorker):
             log.exception("stream Hermes fallito")
             reply = "Non riesco a completare la risposta."
             tts_failed = False
-        await self.send_json({"type": "reply", "text": reply, "turn": turn})
+        await self.send_json(protocol.reply(text=reply, turn=turn))
         if stream_had_audio:
             playback = await self._wait_for_playback(turn)
             if playback == "completed":

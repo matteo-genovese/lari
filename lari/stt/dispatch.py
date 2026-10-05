@@ -10,7 +10,7 @@ WAKE_CONFIG = _SETTINGS.wake_config
 import asyncio
 import time
 from . import providers as stt_backends
-from . import realtime
+from . import realtime as realtime_backend
 from .local import transcribe
 from .vosk import transcribe_vosk
 from ..wake.detector import vosk_wake, resolve_command, resolve_vosk_command
@@ -29,7 +29,7 @@ def stt_transcribe(pcm: np.ndarray) -> str:
     """Raw text from the configured STT backend: cloud (groq/elevenlabs/openai)
     or local Whisper. A single dispatch point: _on_wake no longer has to pick
     by hand (it used to send everything but vosk to local Whisper)."""
-    if STT_BACKEND == stt_backends.REALTIME_BACKEND:
+    if STT_BACKEND == realtime_backend.REALTIME_BACKEND:
         # Realtime callers must never silently turn a provider failure into a
         # paid batch request.  The live path is opened only after local wake
         # confirmation; direct callers retain the same local fallback.
@@ -49,9 +49,9 @@ async def _transcribe_realtime_or_batch(pcm: np.ndarray, realtime, turn: int,
     """
     try:
         if start_failed or realtime is None:
-            raise stt_backends.RealtimeUnavailable("realtime unavailable")
+            raise realtime_backend.RealtimeUnavailable("realtime unavailable")
         return await realtime.finish(), False
-    except stt_backends.RealtimeUnavailable:
+    except realtime_backend.RealtimeUnavailable:
         log.warning(
             "turno %d: ElevenLabs realtime STT non disponibile; fallback STT locale",
             turn,
@@ -84,7 +84,7 @@ def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None
         text = stt_backends.transcribe(pcm, backend)
         return resolve_command(text, float("inf") if followup else 0.0,
                                time.monotonic()) if text else None
-    if backend == stt_backends.REALTIME_BACKEND:
+    if backend == realtime_backend.REALTIME_BACKEND:
         # Realtime is a streaming transport, not a reason to use ElevenLabs
         # batch when called synchronously.
         text = _transcribe_local_fallback(pcm)
@@ -98,16 +98,16 @@ def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None
 
 async def open_stream(on_partial):
     """Open the configured live transport after the local wake gates."""
-    if STT_BACKEND != stt_backends.REALTIME_BACKEND:
+    if STT_BACKEND != realtime_backend.REALTIME_BACKEND:
         return None, False
     try:
-        return await realtime.RealtimeScribe.connect(on_partial=on_partial), False
+        return await realtime_backend.RealtimeScribe.connect(on_partial=on_partial), False
     except Exception:
         return None, True
 
 
 async def transcribe_turn(pcm, stream, turn, followup, start_failed=False):
-    if STT_BACKEND == stt_backends.REALTIME_BACKEND:
+    if STT_BACKEND == realtime_backend.REALTIME_BACKEND:
         text, _ = await _transcribe_realtime_or_batch(
             pcm, stream, turn, start_failed=start_failed)
     elif STT_BACKEND == "vosk":
@@ -122,7 +122,7 @@ async def transcribe_turn(pcm, stream, turn, followup, start_failed=False):
 def command_for_turn(text, followup, local_wake_confirmed):
     if STT_BACKEND == "vosk":
         return text
-    if STT_BACKEND == stt_backends.REALTIME_BACKEND:
+    if STT_BACKEND == realtime_backend.REALTIME_BACKEND:
         if followup:
             return text.strip()
         if local_wake_confirmed:
