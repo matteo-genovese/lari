@@ -1,4 +1,4 @@
-"""Cloud STT backends for desk-buddy: A) ElevenLabs Scribe v2, B) Groq Whisper
+"""Cloud STT backends for Lari: A) ElevenLabs Scribe v2, B) Groq Whisper
 Large V3 Turbo, C) OpenAI Whisper API (the cloud path of OpenWhispr).
 
 Privacy: these send the utterance audio to the provider. Keys come from the
@@ -66,7 +66,7 @@ def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings) -> str:
     key_env = KEY_ENV[backend]
     key = getattr(settings, key_env.lower())
     if not key:
-        raise RuntimeError(f"{key_env} non impostata: aggiungila in desk-buddy/.env")
+        raise RuntimeError(f"{key_env} non impostata: aggiungila nel file .env di Lari")
 
     if backend == "elevenlabs":
         # Bare 16 kHz mono s16le PCM: file_format=pcm_s16le_16 has lower latency.

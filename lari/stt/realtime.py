@@ -62,7 +62,7 @@ class DailyAudioBudget:
     """Atomic local ledger for realtime audio sent per day.
 
     This is an explicit local cap on audio sent to the realtime STT websocket.
-    It is not an overall provider billing cap; the Desk Buddy realtime caller
+    It is not an overall provider billing cap; the Lari realtime caller
     falls back locally rather than invoking paid batch transcription.
     """
 
