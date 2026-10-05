@@ -274,17 +274,17 @@ def build_wake_config(phrase: str, aliases: Iterable[str] = (),
 
 
 def from_env(environ: Mapping[str, str] | None = None) -> WakeConfig:
-    """Build the config from BUDDY_* settings (legacy names are canonical)."""
+    """Build the config from LARI_* settings."""
     import os
     env = os.environ if environ is None else environ
-    phrase = env.get("BUDDY_WAKE_PHRASE", "").strip() or default_phrase(
-        env.get("BUDDY_STT_LANG", "")
+    phrase = env.get("LARI_WAKE_PHRASE", "").strip() or default_phrase(
+        env.get("LARI_STT_LANG", "")
     )
-    aliases = (a for a in env.get("BUDDY_WAKE_ALIASES", "").split(","))
-    vocab = (t for t in env.get("BUDDY_STT_KEYTERMS", "").split(","))
+    aliases = (a for a in env.get("LARI_WAKE_ALIASES", "").split(","))
+    vocab = (t for t in env.get("LARI_STT_KEYTERMS", "").split(","))
     return build_wake_config(
         phrase,
         aliases=aliases,
         vocab=vocab,
-        command_override=env.get("BUDDY_WAKE_RE", "").strip() or None,
+        command_override=env.get("LARI_WAKE_RE", "").strip() or None,
     )

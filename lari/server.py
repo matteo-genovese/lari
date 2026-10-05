@@ -29,7 +29,7 @@ from . import stt_backends
 from . import wake_config
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # repo root; runtime paths never depend on cwd
-HERMES_ROOT = Path(os.environ.get("BUDDY_HERMES_ROOT") or (Path.home() / ".hermes" / "hermes-agent")).expanduser()
+HERMES_ROOT = Path(os.environ.get("LARI_HERMES_ROOT") or (Path.home() / ".hermes" / "hermes-agent")).expanduser()
 sys.path.insert(0, str(HERMES_ROOT))
 
 
@@ -45,23 +45,23 @@ def _wake_engine_builder():
     except ImportError as exc:
         raise RuntimeError(
             "the openwakeword wake engine needs the Hermes source in "
-            "BUDDY_HERMES_ROOT"
+            "LARI_HERMES_ROOT"
         ) from exc
     return _build_engine
 
 # ─── configuration ──────────────────────────────────────────────────────────
-TOKEN = os.environ.get("BUDDY_TOKEN", "").strip()
-PORT = int(os.environ.get("BUDDY_PORT", "8643"))
-HERMES_API = os.environ.get("BUDDY_HERMES_API", "http://127.0.0.1:8642")
-HERMES_KEY = os.environ.get("BUDDY_HERMES_KEY", "")
-SESSION_KEY = os.environ.get("BUDDY_SESSION_KEY", "desk-buddy")
-HERMES_PROVIDER = os.environ.get("BUDDY_HERMES_PROVIDER", "deepseek")
-HERMES_MODEL = os.environ.get("BUDDY_HERMES_MODEL", "deepseek-flash")
+TOKEN = os.environ.get("LARI_TOKEN", "").strip()
+PORT = int(os.environ.get("LARI_PORT", "8643"))
+HERMES_API = os.environ.get("LARI_HERMES_API", "http://127.0.0.1:8642")
+HERMES_KEY = os.environ.get("LARI_HERMES_KEY", "")
+SESSION_KEY = os.environ.get("LARI_SESSION_KEY", "lari")
+HERMES_PROVIDER = os.environ.get("LARI_HERMES_PROVIDER", "deepseek")
+HERMES_MODEL = os.environ.get("LARI_HERMES_MODEL", "deepseek-flash")
 # ─── voice agent ──────────────────────────────────────────────────────
 # "deepseek" = DeepSeek flash via direct API (fast, NO tools: weather and
 # news are not real-time). "hermes" = the full Hermes agent (real tools,
 # much slower: 18k tokens of system prompt per utterance).
-AGENT_BACKEND = os.environ.get("BUDDY_AGENT_BACKEND", "deepseek").strip()
+AGENT_BACKEND = os.environ.get("LARI_AGENT_BACKEND", "deepseek").strip()
 
 from . import usage  # noqa: E402  (project module)
 USAGE_LEDGER = usage.UsageLedger()
@@ -95,12 +95,12 @@ if not _ds_key or not _ds_base:
     _ds_base = _ds_base or _hb
 DEEPSEEK_KEY = _ds_key
 DEEPSEEK_API = _ds_base.rstrip("/") or "https://api.deepseek.com"
-DEEPSEEK_MODEL = os.environ.get("BUDDY_DEEPSEEK_MODEL", "deepseek-flash")
-DEEPSEEK_TIMEOUT_S = float(os.environ.get("BUDDY_DEEPSEEK_TIMEOUT", "60"))
+DEEPSEEK_MODEL = os.environ.get("LARI_DEEPSEEK_MODEL", "deepseek-flash")
+DEEPSEEK_TIMEOUT_S = float(os.environ.get("LARI_DEEPSEEK_TIMEOUT", "60"))
 # Voice = short replies meant to be spoken. Without this, a bogus
 # transcription makes the agent dig through logs (125 s in the worst measured case).
 VOICE_SYSTEM = os.environ.get(
-    "BUDDY_VOICE_SYSTEM",
+    "LARI_VOICE_SYSTEM",
     "Sei l'assistente vocale di un assistente personale. Le battute ti arrivano da un "
     "microfono, quindi possono essere trascritte in modo imperfetto: se il senso è "
     "intuibile rispondi comunque con la tua interpretazione migliore («ehi ora sono» va "
@@ -139,21 +139,21 @@ class HermesReply(str):
         return reply
 
 
-TTS_VOICE = os.environ.get("BUDDY_TTS_VOICE", "it-IT-ElsaNeural")
-STT_MODEL = os.environ.get("BUDDY_STT_MODEL", "base")
-STT_BACKEND = os.environ.get("BUDDY_STT_BACKEND", "whisper").strip()
-VOSK_MODEL_DIR = Path(os.environ.get("BUDDY_VOSK_MODEL_DIR", str(BASE_DIR / "models/vosk-model-small-it-0.22")))
-STT_LANG = os.environ.get("BUDDY_STT_LANG", "it").strip()  # "" = auto-detect
+TTS_VOICE = os.environ.get("LARI_TTS_VOICE", "it-IT-ElsaNeural")
+STT_MODEL = os.environ.get("LARI_STT_MODEL", "base")
+STT_BACKEND = os.environ.get("LARI_STT_BACKEND", "whisper").strip()
+VOSK_MODEL_DIR = Path(os.environ.get("LARI_VOSK_MODEL_DIR", str(BASE_DIR / "models/vosk-model-small-it-0.22")))
+STT_LANG = os.environ.get("LARI_STT_LANG", "it").strip()  # "" = auto-detect
 # Fast gate for the wake: on bad audio the large model takes 50-60 s and
 # blocks everything. With a small model the rejection arrives in seconds.
 # Empty ("") = a single pass with the large model.
 # A tiny model used as veto also rejects genuine wake words.
 # A single pass with small: fewer false negatives and no double transcription.
-STT_GATE = os.environ.get("BUDDY_STT_GATE", "").strip()
+STT_GATE = os.environ.get("LARI_STT_GATE", "").strip()
 
 SAMPLE_RATE = 16000
 FRAME = 1280              # 80 ms @ 16 kHz, frame size recommended by openWakeWord
-WAKE_PROVIDER = os.environ.get("BUDDY_WAKE_PROVIDER", "whisper")
+WAKE_PROVIDER = os.environ.get("LARI_WAKE_PROVIDER", "whisper")
 # whisper: any speech starts the recording, then the phrase is searched in the text.
 # sherpa/openwakeword: dedicated hotword engine (English; misses the IT pronunciation).
 # The wake phrase is one setting: command regex, Vosk grammar, junk cleanup and
@@ -181,42 +181,42 @@ WAKE_PHRASE = WAKE_CONFIG.phrase
 # Second local gate on the wake candidate, before any provider connection.
 # It may veto only a confident mismatch (see confirm_candidate): every doubt
 # passes, so a real wake is never lost to an ASR mishearing.  Set
-# BUDDY_WAKE_CONFIRM=0 to disable.
-WAKE_CONFIRM = os.environ.get("BUDDY_WAKE_CONFIRM", "1").strip() != "0"
+# LARI_WAKE_CONFIRM=0 to disable.
+WAKE_CONFIRM = os.environ.get("LARI_WAKE_CONFIRM", "1").strip() != "0"
 # sherpa threshold = 0.05 + 0.4*sens; 0.5 -> 0.25 (upstream-recommended value)
-WAKE_SENSITIVITY = float(os.environ.get("BUDDY_SENSITIVITY", "0.5"))
-CONFIRM_FRAMES = int(os.environ.get("BUDDY_CONFIRM_FRAMES", "3"))
+WAKE_SENSITIVITY = float(os.environ.get("LARI_SENSITIVITY", "0.5"))
+CONFIRM_FRAMES = int(os.environ.get("LARI_CONFIRM_FRAMES", "3"))
 COOLDOWN_S = 2.0          # same constraint as Hermes between two wakes
-AMBIENT_PAUSE_S = float(os.environ.get("BUDDY_AMBIENT_PAUSE", "6"))  # pause after speech not addressed to us
+AMBIENT_PAUSE_S = float(os.environ.get("LARI_AMBIENT_PAUSE", "6"))  # pause after speech not addressed to us
 # The phone plays the reply through the same speaker the microphone uses:
 # without this mute, the system ends up transcribing itself.
-ECHO_MUTE_S = float(os.environ.get("BUDDY_ECHO_MUTE", "2.5"))
-FOLLOWUP_S = float(os.environ.get("BUDDY_FOLLOWUP_S", "30"))  # after audio playback
-PLAYBACK_ACK_TIMEOUT_S = float(os.environ.get("BUDDY_PLAYBACK_ACK_TIMEOUT", "45"))
+ECHO_MUTE_S = float(os.environ.get("LARI_ECHO_MUTE", "2.5"))
+FOLLOWUP_S = float(os.environ.get("LARI_FOLLOWUP_S", "30"))  # after audio playback
+PLAYBACK_ACK_TIMEOUT_S = float(os.environ.get("LARI_PLAYBACK_ACK_TIMEOUT", "45"))
 
 # Streaming voice responses are deliberately bounded.  The queue is small so a
 # slow browser/TTS provider applies back-pressure to SSE instead of allowing an
 # unbounded response to accumulate in memory.
-STREAM_TTS_QUEUE_MAX = int(os.environ.get("BUDDY_STREAM_TTS_QUEUE_MAX", "8"))
-STREAM_TEXT_MAX_CHARS = int(os.environ.get("BUDDY_STREAM_TEXT_MAX_CHARS", "4000"))
-STREAM_SENTENCE_MAX_CHARS = int(os.environ.get("BUDDY_STREAM_SENTENCE_MAX_CHARS", "280"))
+STREAM_TTS_QUEUE_MAX = int(os.environ.get("LARI_STREAM_TTS_QUEUE_MAX", "8"))
+STREAM_TEXT_MAX_CHARS = int(os.environ.get("LARI_STREAM_TEXT_MAX_CHARS", "4000"))
+STREAM_SENTENCE_MAX_CHARS = int(os.environ.get("LARI_STREAM_SENTENCE_MAX_CHARS", "280"))
 
 # VAD: adaptive threshold. Minimum base threshold + multiple of the noise floor.
-VAD_MIN_RMS = float(os.environ.get("BUDDY_VAD_MIN_RMS", "900"))
-VAD_NOISE_MULT = float(os.environ.get("BUDDY_VAD_NOISE_MULT", "2.5"))
+VAD_MIN_RMS = float(os.environ.get("LARI_VAD_MIN_RMS", "900"))
+VAD_NOISE_MULT = float(os.environ.get("LARI_VAD_NOISE_MULT", "2.5"))
 # More tolerant of pauses while a request is being phrased; the VAD still
 # closes on silence, without waiting for the hard limit.
-SILENCE_END_S = float(os.environ.get("BUDDY_SILENCE_END", "2.5"))
+SILENCE_END_S = float(os.environ.get("LARI_SILENCE_END", "2.5"))
 # Only a parachute against continuous noise / a stuck VAD, not a target utterance length.
-MAX_UTTERANCE_S = float(os.environ.get("BUDDY_MAX_UTTERANCE_S", "45"))
-MIN_SPEECH_S = float(os.environ.get("BUDDY_MIN_SPEECH_S", "0.7"))
-IDLE_ABORT_S = float(os.environ.get("BUDDY_IDLE_ABORT_S", "4.0"))
+MAX_UTTERANCE_S = float(os.environ.get("LARI_MAX_UTTERANCE_S", "45"))
+MIN_SPEECH_S = float(os.environ.get("LARI_MIN_SPEECH_S", "0.7"))
+IDLE_ABORT_S = float(os.environ.get("LARI_IDLE_ABORT_S", "4.0"))
 
-AGENT_TIMEOUT_S = float(os.environ.get("BUDDY_AGENT_TIMEOUT", "180"))
-CLI_TIMEOUT_S = float(os.environ.get("BUDDY_CLI_TIMEOUT", "70"))
+AGENT_TIMEOUT_S = float(os.environ.get("LARI_AGENT_TIMEOUT", "180"))
+CLI_TIMEOUT_S = float(os.environ.get("LARI_CLI_TIMEOUT", "70"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")  # no revision check at every STT model load
 
-log = logging.getLogger("desk-buddy")
+log = logging.getLogger("lari")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -1626,11 +1626,11 @@ async def debug_last(token: str):
             import wave
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
                 path = fh.name
-            with wave.open(path, "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(SAMPLE_RATE)
-                w.writeframes(data)
+                with wave.open(fh, "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(SAMPLE_RATE)
+                    w.writeframes(data)
             return FileResponse(path, media_type="audio/wav", filename="last.wav")
     return Response(content="nessuna sessione attiva", status_code=404)
 
@@ -1704,7 +1704,7 @@ async def usage_summary(token: str):
     """Monthly usage summary: turns, paid realtime seconds, local turns."""
     if not TOKEN or token != TOKEN:
         return Response(content="Forbidden", status_code=403)
-    rate_env = os.environ.get("BUDDY_USAGE_EUR_PER_MIN", "").strip()
+    rate_env = os.environ.get("LARI_USAGE_EUR_PER_MIN", "").strip()
     rate = float(rate_env) if rate_env else None
     summary = USAGE_LEDGER.month_summary(time.strftime("%Y-%m"), eur_per_min=rate)
     return Response(content=json.dumps(summary), media_type="application/json")
@@ -1815,7 +1815,7 @@ async def _startup():
     global _loop
     _loop = asyncio.get_running_loop()
     if not TOKEN:
-        log.warning("BUDDY_TOKEN non imposto: il server rifiuta tutto")
+        log.warning("LARI_TOKEN non imposto: il server rifiuta tutto")
 
 
 if __name__ == "__main__":

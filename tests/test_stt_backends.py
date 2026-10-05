@@ -103,8 +103,8 @@ class WakeTermDerivationTests(unittest.TestCase):
         import sys
         env = {
             "PATH": os.environ.get("PATH", ""),
-            "BUDDY_WAKE_PHRASE": "ehi lari",
-            "BUDDY_STT_KEYTERMS": "Aura",
+            "LARI_WAKE_PHRASE": "ehi lari",
+            "LARI_STT_KEYTERMS": "Aura",
         }
         code = (
             "import json; from lari import stt_backends; print(json.dumps({"

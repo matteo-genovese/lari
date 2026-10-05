@@ -25,10 +25,10 @@ fi
 if [ ! -f .env ]; then
     cp .env.example .env
     TOKEN="$("$VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(32))')"
-    sed -i "s|^#\{0,1\}BUDDY_TOKEN=.*|BUDDY_TOKEN=$TOKEN|" .env
+    sed -i "s|^#\{0,1\}LARI_TOKEN=.*|LARI_TOKEN=$TOKEN|" .env
     chmod 600 .env
-    echo "Created .env with a generated BUDDY_TOKEN — keep it secret."
+    echo "Created .env with a generated LARI_TOKEN — keep it secret."
 fi
 
 echo "Setup complete. Next: edit .env (Hermes endpoint, providers), then run:"
-echo "  .venv/bin/uvicorn lari.server:app --host 127.0.0.1 --port \${BUDDY_PORT:-8643}"
+echo "  .venv/bin/uvicorn lari.server:app --host 127.0.0.1 --port \${LARI_PORT:-8643}"

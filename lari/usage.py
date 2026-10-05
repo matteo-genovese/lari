@@ -15,7 +15,7 @@ from pathlib import Path
 class UsageLedger:
     def __init__(self, path: str | Path | None = None):
         default = Path(__file__).resolve().parent.parent / "usage.json"
-        self.path = Path(path or os.environ.get("BUDDY_USAGE_LEDGER", default))
+        self.path = Path(path or os.environ.get("LARI_USAGE_LEDGER", default))
         self._lock = threading.Lock()
 
     def _load(self) -> dict:

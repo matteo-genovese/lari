@@ -40,7 +40,7 @@ KEY_ENV = {
     "openai": "OPENAI_API_KEY",
 }
 # Wake-derived ASR bias terms: keyterms, style prompt and the realtime URL all
-# derive from the configured wake phrase plus the optional BUDDY_STT_KEYTERMS
+# derive from the configured wake phrase plus the optional LARI_STT_KEYTERMS
 # vocabulary (names and places the ASR misrenders).
 _WAKE = wake_config.from_env()
 # ElevenLabs batch keyterms (<= 5 words each, <= 1000 total). Scribe v2 with
@@ -86,9 +86,9 @@ class DailyAudioBudget:
     def __init__(self, path: str | Path | None = None,
                  daily_seconds: float | None = None):
         default_path = Path(__file__).resolve().parent.parent / ".realtime_stt_usage.json"
-        self.path = Path(path or os.environ.get("BUDDY_REALTIME_USAGE_FILE", default_path))
+        self.path = Path(path or os.environ.get("LARI_REALTIME_USAGE_FILE", default_path))
         self.daily_seconds = float(
-            os.environ.get("BUDDY_REALTIME_DAILY_SECONDS", REALTIME_DAILY_SECONDS)
+            os.environ.get("LARI_REALTIME_DAILY_SECONDS", REALTIME_DAILY_SECONDS)
             if daily_seconds is None else daily_seconds
         )
         self._lock = threading.Lock()
@@ -440,7 +440,7 @@ def transcribe(pcm: np.ndarray, backend: str) -> str:
         call = dict(
             url="https://api.groq.com/openai/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {key}"},
-            data_tuples=[("model", os.environ.get("BUDDY_GROQ_MODEL", "whisper-large-v3")),
+            data_tuples=[("model", os.environ.get("LARI_GROQ_MODEL", "whisper-large-v3")),
                          ("language", "it"),
                          ("prompt", STYLE_PROMPT),
                          ("response_format", "json")],
