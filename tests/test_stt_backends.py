@@ -3,6 +3,9 @@
 No network in tests: the multipart transport is mocked and every request
 construction and response parse is asserted.
 """
+from contextlib import nullcontext
+from dataclasses import replace
+from lari.config import get_settings
 import os
 import unittest
 from unittest.mock import patch
@@ -28,8 +31,8 @@ class ElevenLabsTests(unittest.TestCase):
     def test_posts_scribe_v2_with_raw_pcm_keyterms_and_parses_text(self):
         fake_post.captured = None
         settings = load_settings({'ELEVENLABS_API_KEY': 'k-el'})
-        with patch.object(stt_backends, 'KEYTERMS', ['Sentinel Term']), \
-             patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Ehi Nic, che tempo fa a Roma?'})):
+        settings = replace(settings, wake_config=replace(settings.wake_config, batch_keyterms=('Sentinel Term',)))
+        with patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Ehi Nic, che tempo fa a Roma?'})):
             text = stt_backends.transcribe(PCM, 'elevenlabs', settings=settings)
         self.assertEqual(text, 'Ehi Nic, che tempo fa a Roma?')
         call = fake_post.captured
@@ -48,8 +51,8 @@ class GroqTests(unittest.TestCase):
     def test_posts_whisper_turbo_with_prompt_and_parses_text(self):
         fake_post.captured = None
         settings = load_settings({'GROQ_API_KEY': 'k-gq'})
-        with patch.object(stt_backends, 'STYLE_PROMPT', 'sentinel style'), \
-             patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Che tempo fa domani a Roma?'})):
+        settings = replace(settings, wake_config=replace(settings.wake_config, style_prompt='sentinel style'))
+        with patch.object(stt_backends, '_post_multipart', fake_post({'text': 'Che tempo fa domani a Roma?'})):
             text = stt_backends.transcribe(PCM, 'groq', settings=settings)
         self.assertEqual(text, 'Che tempo fa domani a Roma?')
         call = fake_post.captured
@@ -110,10 +113,10 @@ class WakeTermDerivationTests(unittest.TestCase):
             "LARI_STT_KEYTERMS": "Aura",
         }
         code = (
-            "import json; from lari.stt import providers as stt_backends, realtime; print(json.dumps({"
-            "'rt': list(realtime.REALTIME_KEYTERMS), "
-            "'kt': list(stt_backends.KEYTERMS), "
-            "'p': stt_backends.STYLE_PROMPT}))"
+            "import json; from lari.config import get_settings; cfg = get_settings().wake_config; print(json.dumps({"
+            "'rt': list(cfg.realtime_keyterms), "
+            "'kt': list(cfg.batch_keyterms), "
+            "'p': cfg.style_prompt}))"
         )
         result = subprocess.run(
             [sys.executable, "-c", code], env=env, text=True,
@@ -128,12 +131,12 @@ class WakeTermDerivationTests(unittest.TestCase):
 
 class ServerRoutingTests(unittest.TestCase):
     def test_cloud_decode_keeps_wake_gate_and_followup(self):
-        transcript = f'{dispatch.WAKE_CONFIG.display}, che tempo fa a Roma?'
+        transcript = f'{get_settings().wake_config.display}, che tempo fa a Roma?'
         with patch.object(providers, 'transcribe',
                           return_value=transcript) as mocked:
-            cmd = dispatch.decode_utterance(PCM, followup=False, backend='groq')
+            cmd = dispatch.decode_utterance(PCM, followup=False, backend='groq', settings=get_settings())
             self.assertEqual(cmd, 'che tempo fa a Roma?')
-            follow = dispatch.decode_utterance(PCM, followup=True, backend='groq')
+            follow = dispatch.decode_utterance(PCM, followup=True, backend='groq', settings=get_settings())
             # The wake leftover is stripped in the follow-up too: same
             # semantics as the whisper path. The follow-up difference shows
             # on text WITHOUT the wake (test_cloud_decode_rejects_speech_without_wake).
@@ -143,8 +146,8 @@ class ServerRoutingTests(unittest.TestCase):
     def test_cloud_decode_rejects_speech_without_wake(self):
         with patch.object(providers, 'transcribe',
                           return_value='Ho parlato con Nic di lavoro.'):
-            self.assertIsNone(dispatch.decode_utterance(PCM, followup=False, backend='openai'))
-            self.assertEqual(dispatch.decode_utterance(PCM, followup=True, backend='openai'),
+            self.assertIsNone(dispatch.decode_utterance(PCM, followup=False, backend='openai', settings=get_settings()))
+            self.assertEqual(dispatch.decode_utterance(PCM, followup=True, backend='openai', settings=get_settings()),
                              'Ho parlato con Nic di lavoro.')
 
 
@@ -154,20 +157,20 @@ class RuntimeDispatchTests(unittest.TestCase):
 
         The wiring in _on_wake was broken even with a correct decode_utterance.
         """
-        with patch.object(dispatch, 'STT_BACKEND', 'groq'), \
+        with nullcontext(replace(get_settings(), stt_backend='groq')) as settings, \
              patch.object(providers, 'transcribe',
                           return_value='Ehi Nic, che tempo fa?') as cloud, \
              patch.object(dispatch, 'transcribe',
                           side_effect=AssertionError('whisper locale non deve girare')) as local:
-            text = dispatch.stt_transcribe(PCM)
+            text = dispatch.stt_transcribe(PCM, settings=settings)
         self.assertEqual(text, 'Ehi Nic, che tempo fa?')
         self.assertEqual(cloud.call_args.args[1], 'groq')
         local.assert_not_called()
 
     def test_whisper_local_is_the_fallback(self):
-        with patch.object(dispatch, 'STT_BACKEND', 'whisper'), \
+        with nullcontext(replace(get_settings(), stt_backend='whisper')) as settings, \
              patch.object(dispatch, 'transcribe', return_value='Ehi Nic.') as local:
-            self.assertEqual(dispatch.stt_transcribe(PCM), 'Ehi Nic.')
+            self.assertEqual(dispatch.stt_transcribe(PCM, settings=settings), 'Ehi Nic.')
         local.assert_called_once()
 
 

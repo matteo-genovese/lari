@@ -1,4 +1,5 @@
 """Offline tests for the bounded ElevenLabs Scribe v2 Realtime path."""
+from lari.config import get_settings
 import asyncio
 import json
 import logging
@@ -18,7 +19,7 @@ from lari.config import load_settings
 
 
 def _reserve_budget_in_process(path, barrier, results):
-    budget = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0)
+    budget = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0, settings=get_settings())
     barrier.wait()
     results.put(budget.reserve(0.75))
 
@@ -59,7 +60,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         partials = []
         budget = stt_backends.DailyAudioBudget(
             path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-        )
+        , settings=get_settings())
 
         async def on_partial(text):
             partials.append(text)
@@ -119,7 +120,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         fake = SegmentedFakeWebSocket()
         budget = stt_backends.DailyAudioBudget(
             path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-        )
+        , settings=get_settings())
 
         async def connect(_url, **_kwargs):
             return fake
@@ -143,7 +144,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         ])
         budget = stt_backends.DailyAudioBudget(
             path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-        )
+        , settings=get_settings())
 
         async def connect(_url, **_kwargs):
             return fake
@@ -170,13 +171,13 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             session = await stt_backends.RealtimeScribe.connect(
                 budget=stt_backends.DailyAudioBudget(
                     path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-                ),
+                , settings=get_settings()),
                 settings=settings,
             )
             await session.close()
 
         query = parse_qs(urlsplit(captured["url"]).query)
-        self.assertEqual(query["keyterms"], list(stt_backends.REALTIME_KEYTERMS))
+        self.assertEqual(query["keyterms"], list(settings.wake_config.realtime_keyterms))
         self.assertGreater(len(query["keyterms"]), 1)
         self.assertTrue(all(len(term) <= 20 for term in query["keyterms"]))
         self.assertNotIn("secret-key", captured["url"])
@@ -200,7 +201,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
                 session = await stt_backends.RealtimeScribe.connect(
                     budget=stt_backends.DailyAudioBudget(
                         path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-                    ),
+                    , settings=get_settings()),
                     settings=settings,
                 )
                 await session.close()
@@ -224,7 +225,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
                 await stt_backends.RealtimeScribe.connect(
                     budget=stt_backends.DailyAudioBudget(
                         path=Path(tempfile.mkdtemp()) / "usage.json", daily_seconds=10
-                    ),
+                    , settings=get_settings()),
                     settings=settings,
                 )
 
@@ -234,10 +235,10 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_daily_budget_persists_and_blocks_after_cap(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "usage.json"
-            first = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0)
+            first = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0, settings=get_settings())
             self.assertTrue(first.reserve(0.75))
             self.assertFalse(first.reserve(0.3))
-            second = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0)
+            second = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0, settings=get_settings())
             self.assertAlmostEqual(second.remaining(), 0.25, places=3)
             self.assertEqual(path.stat().st_mode & 0o077, 0)
 
@@ -268,7 +269,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             path = Path(root) / "usage.json"
             corrupt = '{"date": "not-a-date", "seconds": "unknown"}'
             path.write_text(corrupt, encoding="utf-8")
-            budget = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0)
+            budget = stt_backends.DailyAudioBudget(path=path, daily_seconds=1.0, settings=get_settings())
 
             self.assertEqual(budget.remaining(), 0.0)
             self.assertFalse(budget.reserve(0.1))
@@ -278,7 +279,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as root:
             budget = stt_backends.DailyAudioBudget(
                 path=Path(root) / "usage.json", daily_seconds=0.1
-            )
+            , settings=get_settings())
             self.assertTrue(budget.reserve(0.1))
             fake = FakeWebSocket()
 
@@ -303,16 +304,16 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 await dispatch.transcribe_realtime_or_batch(pcm, type("R", (), {
                     "finish": successful,
-                })(), 1),
+                })(), 1, settings=get_settings()),
                 "Ehi Lari, realtime",
             )
             self.assertEqual(
                 await dispatch.transcribe_realtime_or_batch(pcm, type("R", (), {
                     "finish": failed,
-                })(), 2),
+                })(), 2, settings=get_settings()),
                 "Ehi Lari, local",
             )
-        local.assert_called_once_with(pcm)
+        local.assert_called_once_with(pcm, get_settings())
         paid_batch.assert_not_called()
 
     async def test_realtime_provider_failure_never_uses_paid_batch(self):
@@ -324,11 +325,11 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
              patch.object(providers, "transcribe", paid_batch):
             text, used_batch = await dispatch._transcribe_realtime_or_batch(
                 pcm, None, 9, start_failed=True
-            )
+            , settings=get_settings())
 
         self.assertEqual(text, "testo locale")
         self.assertFalse(used_batch)
-        local.assert_called_once_with(pcm)
+        local.assert_called_once_with(pcm, get_settings())
         paid_batch.assert_not_called()
 
 

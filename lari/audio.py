@@ -10,17 +10,9 @@ import time
 import uuid
 from pathlib import Path
 import numpy as np
-from .config import get_settings
-_SETTINGS = get_settings()
 BASE_DIR = Path(__file__).resolve().parent.parent
 SAMPLE_RATE = 16000
 log = logging.getLogger("lari")
-VAD_MIN_RMS = _SETTINGS.vad_min_rms
-VAD_NOISE_MULT = _SETTINGS.vad_noise_mult
-SILENCE_END_S = _SETTINGS.silence_end_s
-MAX_UTTERANCE_S = _SETTINGS.max_utterance_s
-MIN_SPEECH_S = _SETTINGS.min_speech_s
-IDLE_ABORT_S = _SETTINGS.idle_abort_s
 
 def save_turn_audio(pcm: np.ndarray, directory: Path | None = None,
                     name: str | None = None, keep: int = 5) -> Path:
@@ -43,7 +35,7 @@ def save_turn_audio(pcm: np.ndarray, directory: Path | None = None,
 
 
 class SessionAudio:
-    """Audio state and algorithms shared by a satellite session."""
+    """Per-session audio state; VAD reads the session's immutable Settings."""
 
     def _init_audio(self):
         self.frames = bytearray()          # frame-alignment residue
@@ -87,7 +79,7 @@ class SessionAudio:
 
 
     async def _record_utterance(self, prelude: bytes = b"", realtime=None):
-        """VAD: collect PCM while speech lasts, then close after SILENCE_END_S of silence.
+        """VAD: collect PCM while speech lasts, then close after the configured silence interval.
 
         Timing is computed on received samples (not the wall clock), so the
         behavior stays identical with the live stream and in tests.
@@ -99,7 +91,7 @@ class SessionAudio:
         idle_s = 0.0
         started = False
         last_data = time.time()
-        t_end_max = time.time() + MAX_UTTERANCE_S
+        t_end_max = time.time() + self._settings.max_utterance_s
         reported_stt_mode = None
 
         async def forward_audio(chunk: bytes):
@@ -123,7 +115,7 @@ class SessionAudio:
             # it through the same local VAD accounting so a quiet gap at the
             # queue boundary cannot discard the first spoken words.
             seed = np.frombuffer(prelude, dtype=np.int16)
-            seed_threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
+            seed_threshold = max(self._settings.vad_min_rms, self.noise_floor * self._settings.vad_noise_mult)
             for offset in range(0, len(seed), 1600):
                 frame = seed[offset:offset + 1600]
                 if len(frame) == 0:
@@ -156,7 +148,7 @@ class SessionAudio:
                 # the audio sent to the provider.
                 await forward_audio(chunk)
             rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
-            threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
+            threshold = max(self._settings.vad_min_rms, self.noise_floor * self._settings.vad_noise_mult)
             # The floor adapts ONLY before the first speech: during an
             # utterance the quietest syllables would be learned as ambient noise,
             # the threshold would rise above the speaker's own peaks and the
@@ -169,7 +161,7 @@ class SessionAudio:
                 elif time.time() - self.last_silent > 3.0:
                     self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
                     self.last_silent = time.time()
-                    threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
+                    threshold = max(self._settings.vad_min_rms, self.noise_floor * self._settings.vad_noise_mult)
                     log.info("VAD: floor adattato al rumore ambiente -> soglia %.0f", threshold)
             if rms >= threshold:
                 if not started:
@@ -182,16 +174,16 @@ class SessionAudio:
                 # Close anyway after double the expected silence: the wake or the
                 # follow-up already confirmed spoken intent; the voiced quorum
                 # must never be able to hang the recorder.
-                if idle_s >= SILENCE_END_S and (
-                        voiced_s >= MIN_SPEECH_S or idle_s >= SILENCE_END_S + 2.0):
+                if idle_s >= self._settings.silence_end_s and (
+                        voiced_s >= self._settings.min_speech_s or idle_s >= self._settings.silence_end_s + 2.0):
                     break
             else:
                 idle_s += dt
-                if idle_s >= IDLE_ABORT_S:
-                    log.info("VAD: abort, nessun parlato entro %.1fs", IDLE_ABORT_S)
+                if idle_s >= self._settings.idle_abort_s:
+                    log.info("VAD: abort, nessun parlato entro %.1fs", self._settings.idle_abort_s)
                     return None
-            if idle_s >= SILENCE_END_S and (
-                    voiced_s >= MIN_SPEECH_S or idle_s >= SILENCE_END_S + 2.0):
+            if idle_s >= self._settings.silence_end_s and (
+                    voiced_s >= self._settings.min_speech_s or idle_s >= self._settings.silence_end_s + 2.0):
                 break
         pcm = np.frombuffer(bytes(collected), dtype=np.int16)
         log.info("VAD: raccolti %.2fs (parlato %.2fs, started=%s)", len(pcm) / SAMPLE_RATE, voiced_s, started)
@@ -200,7 +192,7 @@ class SessionAudio:
         # leaving only "what's the weather tomorrow...", which the regex then
         # rejected. Whisper already has its own VAD for leading silence.
         start = 0
-        thr = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT) * 0.5
+        thr = max(self._settings.vad_min_rms, self.noise_floor * self._settings.vad_noise_mult) * 0.5
         win = 1600
         end = len(pcm)
         for i in range(len(pcm) - win, start, -win):
@@ -213,7 +205,7 @@ class SessionAudio:
 
 
     def update_noise_floor(self, rms):
-        thr = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
+        thr = max(self._settings.vad_min_rms, self.noise_floor * self._settings.vad_noise_mult)
         if rms < thr:
             self.noise_floor = 0.98 * self.noise_floor + 0.02 * max(rms, 1.0)
             self.last_silent = time.time()

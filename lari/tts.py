@@ -3,24 +3,19 @@ from __future__ import annotations
 from . import protocol
 import asyncio
 import re
-from .config import get_settings
-_SETTINGS = get_settings()
-TTS_VOICE = _SETTINGS.tts_voice
-STREAM_TTS_QUEUE_MAX = _SETTINGS.stream_tts_queue_max
-STREAM_TEXT_MAX_CHARS = _SETTINGS.stream_text_max_chars
-STREAM_SENTENCE_MAX_CHARS = _SETTINGS.stream_sentence_max_chars
+from .config import Settings
 
 
 class TTSUnavailable(RuntimeError):
     """Voice output failed; the public message contains no provider details."""
 
 
-async def tts(text: str) -> bytes:
+async def tts(text: str, settings: Settings) -> bytes:
     """Use edge-tts in the caller's task so cancellation closes its stream."""
     try:
         import edge_tts
         buf = bytearray()
-        async for chunk in edge_tts.Communicate(text, TTS_VOICE).stream():
+        async for chunk in edge_tts.Communicate(text, settings.tts_voice).stream():
             if chunk.get("type") == "audio":
                 buf.extend(chunk["data"])
         return bytes(buf)
@@ -33,8 +28,8 @@ class SpeakableSentenceBuffer:
 
     _END_RE = re.compile(r"[.!?]+(?:[\"'’”»\)\]]+)?(?=\s|$)|[;:]+(?=\s|$)|\n+")
 
-    def __init__(self, max_chars: int = STREAM_SENTENCE_MAX_CHARS,
-                 total_limit: int = STREAM_TEXT_MAX_CHARS):
+    def __init__(self, max_chars: int,
+                 total_limit: int):
         self.max_chars = max(1, max_chars)
         self.total_limit = max(1, total_limit)
         self.buffer = ""
@@ -100,15 +95,16 @@ class Reading:
     Playback completion remains the satellite's ACK, not queue completion.
     """
 
-    def __init__(self, turn, send_json, send_audio, started, audio_sent, valid):
+    def __init__(self, turn, send_json, send_audio, started, audio_sent, valid, *, settings: Settings):
+        self._settings = settings
         self.turn = turn
         self.send_json = send_json
         self.send_audio = send_audio
         self.on_started = started
         self.on_audio_sent = audio_sent
         self.valid = valid
-        self.buffer = SpeakableSentenceBuffer()
-        self.queue = asyncio.Queue(maxsize=max(1, STREAM_TTS_QUEUE_MAX))
+        self.buffer = SpeakableSentenceBuffer(settings.stream_sentence_max_chars, settings.stream_text_max_chars)
+        self.queue = asyncio.Queue(maxsize=max(1, settings.stream_tts_queue_max))
         self.started = False
         self.error: TTSUnavailable | None = None
         self.sequence = 0
@@ -116,7 +112,7 @@ class Reading:
 
     async def _synthesize(self, text):
         try:
-            return await tts(text)
+            return await tts(text, self._settings)
         except Exception:
             raise TTSUnavailable("tts non disponibile") from None
 
@@ -177,7 +173,7 @@ class Reading:
             await self.send_json(protocol.audio_end(turn=self.turn))
 
     async def speak(self, text):
-        if len(text) > STREAM_TEXT_MAX_CHARS:
+        if len(text) > self._settings.stream_text_max_chars:
             raise TTSUnavailable("risposta troppo lunga")
         try:
             await self._deliver(await self._synthesize(text), segmented=False)

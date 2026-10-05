@@ -1,4 +1,7 @@
 """Subsystem boundaries and calibration naming regressions."""
+from contextlib import nullcontext
+from dataclasses import replace
+from lari.config import get_settings
 import ast
 import hashlib
 import json
@@ -31,9 +34,9 @@ recognizer.FinalResult.return_value = '{"text": "ehi lar"}'
 with patch.dict(sys.modules, {"vosk": Mock(KaldiRecognizer=Mock(return_value=recognizer))}), patch.object(detector, "get_vosk"):
     assert detector.vosk_wake(np.zeros(48000, dtype=np.int16), cfg)
 with patch.object(confirm, "transcribe_vosk", return_value=""), patch.object(confirm, "transcribe", side_effect=AssertionError("slow model on doubt")):
-    assert confirm.confirm_candidate(np.zeros(48000, dtype=np.int16), cfg)
+    assert confirm.confirm_candidate(np.zeros(48000, dtype=np.int16), cfg, model="base", language="it")
 with patch.object(confirm, "transcribe_vosk", return_value="che tempo fa"), patch.object(confirm, "transcribe", return_value="vorrei andare a fare shopping"):
-    assert not confirm.confirm_candidate(np.zeros(48000, dtype=np.int16), cfg)
+    assert not confirm.confirm_candidate(np.zeros(48000, dtype=np.int16), cfg, model="base", language="it")
 assert "lari.server" not in sys.modules
 '''
         result = subprocess.run([sys.executable, "-c", source], cwd=ROOT,
@@ -68,10 +71,10 @@ class STTBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_mocked_provider_dispatch_needs_no_credentials(self):
         from lari.stt import dispatch, providers
         pcm = np.zeros(1600, dtype=np.int16)
-        with patch.object(dispatch, "STT_BACKEND", "groq"), \
+        with nullcontext(replace(get_settings(), stt_backend="groq")) as settings, \
              patch.object(providers, "transcribe", return_value="ehi lari, dimmi") as provider:
-            self.assertEqual(dispatch.stt_transcribe(pcm), "ehi lari, dimmi")
-            provider.assert_called_once_with(pcm, "groq")
+            self.assertEqual(dispatch.stt_transcribe(pcm, settings=settings), "ehi lari, dimmi")
+            provider.assert_called_once_with(pcm, "groq", settings=settings)
 
     async def test_realtime_failure_only_uses_local_fallback(self):
         from lari.stt import dispatch, providers, realtime
@@ -79,9 +82,9 @@ class STTBoundaryTests(unittest.IsolatedAsyncioTestCase):
         stream = Mock(finish=AsyncMock(side_effect=realtime.RealtimeUnavailable("failure")))
         with patch.object(dispatch, "transcribe_vosk", return_value="comando locale") as local, \
              patch.object(providers, "transcribe", side_effect=AssertionError("paid fallback")):
-            self.assertEqual(await dispatch.transcribe_realtime_or_batch(pcm, stream, 1),
+            self.assertEqual(await dispatch.transcribe_realtime_or_batch(pcm, stream, 1, settings=get_settings()),
                              "comando locale")
-            self.assertEqual(await dispatch.transcribe_realtime_or_batch(pcm, None, 2, True),
+            self.assertEqual(await dispatch.transcribe_realtime_or_batch(pcm, None, 2, True, settings=get_settings()),
                              "comando locale")
             self.assertEqual(local.call_count, 2)
 
@@ -90,7 +93,7 @@ class STTBoundaryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(dispatch, "transcribe_vosk", side_effect=RuntimeError), \
              patch.object(dispatch, "transcribe", return_value="locale"), \
              patch.object(providers, "transcribe", side_effect=AssertionError("paid fallback")):
-            self.assertEqual(dispatch._transcribe_local_fallback(np.zeros(1600, dtype=np.int16)),
+            self.assertEqual(dispatch._transcribe_local_fallback(np.zeros(1600, dtype=np.int16), settings=get_settings()),
                              "locale")
 
 

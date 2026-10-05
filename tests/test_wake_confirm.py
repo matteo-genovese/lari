@@ -3,6 +3,8 @@
 A false negative costs more than a few seconds of credits: it destroys trust
 in the device. When in doubt, the candidate always passes to Realtime.
 """
+from dataclasses import replace
+from lari.config import get_settings
 import unittest
 from unittest.mock import patch
 
@@ -67,7 +69,7 @@ class SecondGateWiringTests(unittest.TestCase):
         with patch.object(confirm, "transcribe_vosk", return_value="che tempo fa") as free, \
              patch.object(confirm, "transcribe",
                           return_value="vorrei andare a fare shopping") as heard:
-            passed = confirm.confirm_candidate(np.full(16000 * 6, 3000, dtype=np.int16))
+            passed = confirm.confirm_candidate(np.full(16000 * 6, 3000, dtype=np.int16), cfg=get_settings().wake_config, model=get_settings().stt_model, language=get_settings().stt_lang)
         self.assertFalse(passed)
         self.assertLessEqual(free.call_args.args[0].shape[0],
                              int(2.5 * audio_module.SAMPLE_RATE))
@@ -79,13 +81,13 @@ class SecondGateWiringTests(unittest.TestCase):
                           return_value="Ehi Lare, che tempo fa"), \
              patch.object(confirm, "transcribe",
                           side_effect=AssertionError("must not run")):
-            self.assertTrue(confirm.confirm_candidate(np.zeros(4000, dtype=np.int16)))
+            self.assertTrue(confirm.confirm_candidate(np.zeros(4000, dtype=np.int16), cfg=get_settings().wake_config, model=get_settings().stt_model, language=get_settings().stt_lang))
 
     def test_vetoed_candidate_never_schedules_a_turn(self):
         async def sender(_):
             pass
-        session = session_module.Session(None, sender)
-        with patch.object(runtime, "WAKE_CONFIRM", True), \
+        session = session_module.Session(None, sender, settings=get_settings())
+        with patch.object(session, "_settings", replace(session._settings, wake_confirm=True)), \
              patch.object(runtime, "vosk_wake", return_value=True), \
              patch.object(runtime, "confirm_candidate", return_value=False), \
              patch.object(runtime.asyncio, "run_coroutine_threadsafe") as schedule:
@@ -97,8 +99,8 @@ class SecondGateWiringTests(unittest.TestCase):
     def test_disabled_second_gate_keeps_the_single_gate_path(self):
         async def sender(_):
             pass
-        session = session_module.Session(None, sender)
-        with patch.object(runtime, "WAKE_CONFIRM", False), \
+        session = session_module.Session(None, sender, settings=get_settings())
+        with patch.object(session, "_settings", replace(session._settings, wake_confirm=False)), \
              patch.object(runtime, "vosk_wake", return_value=True), \
              patch.object(runtime, "confirm_candidate",
                           side_effect=AssertionError("must not run")), \

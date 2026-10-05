@@ -1,4 +1,7 @@
 """Session ownership, playback ACK and cancellable voice regressions."""
+from contextlib import nullcontext
+from dataclasses import replace
+from lari.config import get_settings
 import asyncio
 import sys
 import time
@@ -27,7 +30,7 @@ class Socket:
 
 class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_ack_leaves_current_turn_and_waiter_untouched(self):
-        session = Session(Socket(), AsyncMock())
+        session = Session(Socket(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 2
         session.state = "speaking"
         session._begin_playback(2)
@@ -43,12 +46,12 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await session.disconnect()
 
     async def test_interrupt_during_synthesis_cancels_reading_without_resubmission(self):
-        session = Session(Socket(), AsyncMock())
+        session = Session(Socket(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 3
         synthesizing = asyncio.Event()
         finalized = asyncio.Event()
 
-        async def synth(text):
+        async def synth(text, settings):
             synthesizing.set()
             try:
                 await asyncio.Event().wait()
@@ -78,7 +81,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(followup.done())
 
     async def test_disconnect_awaits_turn_tts_and_realtime_reader(self):
-        session = Session(Socket(), AsyncMock())
+        session = Session(Socket(), AsyncMock(), settings=get_settings())
         started = asyncio.Event()
         recording = asyncio.Event()
         socket = Mock(close=AsyncMock())
@@ -102,10 +105,10 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(session.active_turn)
 
         # A different disconnect point: voice synthesis and SSE are both active.
-        session = Session(Socket(), AsyncMock())
+        session = Session(Socket(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 4
 
-        async def synth(text):
+        async def synth(text, settings):
             started.set()
             await asyncio.Event().wait()
 
@@ -130,8 +133,8 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         sockets = [Socket(), Socket()]
         async def send(index, message):
             messages[index].append(message)
-        first = Session(sockets[0], lambda message: send(0, message))
-        second = Session(sockets[1], lambda message: send(1, message))
+        first = Session(sockets[0], lambda message: send(0, message), settings=get_settings())
+        second = Session(sockets[1], lambda message: send(1, message), settings=get_settings())
         first.turn = first.active_turn = 7
         second.turn = second.active_turn = 9
         first.hermes_session_id, second.hermes_session_id = "first", "second"
@@ -147,7 +150,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             await on_delta(text + ". Uno. Due.")
             return HermesReply(text, session_id + "-done")
 
-        async def synth(text):
+        async def synth(text, settings):
             await asyncio.sleep(0)
             return text.encode()
 
@@ -184,8 +187,8 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             messages[index].append(message)
             if message["type"] == "audio_end":
                 ended[index].set()
-        first = Session(Socket(), lambda message: send(0, message))
-        second = Session(Socket(), lambda message: send(1, message))
+        first = Session(Socket(), lambda message: send(0, message), settings=get_settings())
+        second = Session(Socket(), lambda message: send(1, message), settings=get_settings())
         first.turn, second.turn = 3, 8
         first.hermes_session_id, second.hermes_session_id = "one", "two"
         first._record_utterance = AsyncMock(return_value=np.ones(16000, dtype=np.int16))
@@ -200,7 +203,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
              patch.object(sessions._dispatch, "command_for_turn", side_effect=lambda text, *args: text), \
              patch.object(sessions, "save_turn_audio", return_value=Path("fake.wav")), \
              patch.object(sessions, "stream_hermes", side_effect=stream), \
-             patch.object(voice, "tts", side_effect=lambda text: text.encode()):
+             patch.object(voice, "tts", side_effect=lambda text, settings: text.encode()):
             tasks = [asyncio.create_task(first._on_wake(local_wake_confirmed=True)),
                      asyncio.create_task(second._on_wake(local_wake_confirmed=True))]
             await asyncio.wait_for(asyncio.gather(*(event.wait() for event in ended)), 1)
@@ -223,7 +226,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await second.disconnect()
 
     async def test_old_turn_cannot_publish_text_audio_or_session_id(self):
-        session = Session(Socket(), AsyncMock())
+        session = Session(Socket(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 12
         session.hermes_session_id = "current"
         async def stream(text, on_delta, on_approval, **kwargs):
@@ -242,7 +245,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await session.disconnect()
 
     async def test_disconnect_awaits_wake_work_scheduled_before_it_starts(self):
-        session = Session(Socket(), AsyncMock())
+        session = Session(Socket(), AsyncMock(), settings=get_settings())
         session.conversation_until = time.monotonic() + 30
         session._record_utterance = AsyncMock(side_effect=AssertionError("disconnected"))
         loop = asyncio.get_running_loop()
@@ -261,7 +264,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session._jobs)
 
     async def test_single_response_provider_error_is_safe(self):
-        session = Session(Socket(), AsyncMock())
+        session = Session(Socket(), AsyncMock(), settings=get_settings())
         with patch.object(voice, "tts", side_effect=RuntimeError("secret/path")):
             await session._speak("test", 1)
         error = session._send_json.call_args.args[0]["error"]
@@ -277,7 +280,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await asyncio.Event().wait()
         socket = Mock(recv=recv, close=AsyncMock())
-        settings = Mock(elevenlabs_api_key="key")
+        settings = replace(get_settings(), elevenlabs_api_key="key")
         budget = Mock(remaining=Mock(return_value=10))
         created = []
         create_task = asyncio.create_task
@@ -308,7 +311,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
                 closed.set()
         provider = Mock(Communicate=Mock(return_value=Mock(stream=chunks)))
         with patch.dict(sys.modules, {"edge_tts": provider}):
-            task = asyncio.create_task(voice.tts("ciao"))
+            task = asyncio.create_task(voice.tts("ciao", settings=get_settings()))
             await asyncio.wait_for(entered.wait(), 1)
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -319,15 +322,15 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
         release = asyncio.Event()
         audio = []
-        async def synth(text):
+        async def synth(text, settings):
             started.set()
             await release.wait()
             return text.encode()
         async def send(data):
             audio.append(data)
-        with patch.object(voice, "STREAM_TTS_QUEUE_MAX", 1), \
+        with nullcontext(replace(get_settings(), stream_tts_queue_max=1)) as settings, \
              patch.object(voice, "tts", side_effect=synth):
-            reading = voice.Reading(1, AsyncMock(), send, AsyncMock(), lambda: None, lambda: True)
+            reading = voice.Reading(1, AsyncMock(), send, AsyncMock(), lambda: None, lambda: True, settings=settings)
             reading.start()
             await reading.feed("Prima.")
             await started.wait()
@@ -350,4 +353,4 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
             buffer.feed("troppo lungo")
         with patch.dict(sys.modules, {"edge_tts": Mock(Communicate=Mock(side_effect=RuntimeError("secret")))}):
             with self.assertRaisesRegex(voice.TTSUnavailable, "^tts non disponibile$"):
-                await voice.tts("ciao")
+                await voice.tts("ciao", settings=get_settings())

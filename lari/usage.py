@@ -11,12 +11,11 @@ import os
 import threading
 from pathlib import Path
 
-from .config import Settings, get_settings
+from .config import Settings
 
 
 class UsageLedger:
-    def __init__(self, path: str | Path | None = None, *, settings: Settings | None = None):
-        settings = settings or get_settings()
+    def __init__(self, path: str | Path | None = None, *, settings: Settings):
         self.path = Path(path or settings.usage_ledger)
         self._lock = threading.Lock()
 

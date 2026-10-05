@@ -19,8 +19,9 @@ from typing import Awaitable, Callable
 import numpy as np
 import websockets
 
-from ..config import Settings, get_settings
+from ..config import Settings
 from .base import STTUnavailable
+from ..wake.config import WakeConfig
 
 log = logging.getLogger(__name__)
 
@@ -28,21 +29,22 @@ REALTIME_BACKEND = "elevenlabs_realtime"
 # Wake-derived ASR bias terms: keyterms, style prompt and the realtime URL all
 # derive from the configured wake phrase plus the optional LARI_STT_KEYTERMS
 # vocabulary (names and places the ASR misrenders).
-_WAKE = get_settings().wake_config
 # Realtime accepts at most 20 characters per keyterm. These are encoded as
 # repeated query parameters below, as required by the WebSocket API.
-REALTIME_KEYTERMS = _WAKE.realtime_keyterms
 
-REALTIME_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?" + urlencode(
-    [
-        ("model_id", "scribe_v2_realtime"),
-        ("audio_format", "pcm_16000"),
-        ("language_code", "it"),
-        ("commit_strategy", "manual"),
-        *[("keyterms", term) for term in REALTIME_KEYTERMS],
-    ]
-)
-REALTIME_DAILY_SECONDS = 600.0
+def realtime_url(cfg: WakeConfig) -> str:
+    """Build provider bias terms from the caller's immutable wake configuration."""
+    return "wss://api.elevenlabs.io/v1/speech-to-text/realtime?" + urlencode(
+        [
+            ("model_id", "scribe_v2_realtime"),
+            ("audio_format", "pcm_16000"),
+            ("language_code", "it"),
+            ("commit_strategy", "manual"),
+            *[("keyterms", term) for term in cfg.realtime_keyterms],
+        ]
+    )
+
+
 REALTIME_SESSION_TIMEOUT_S = 5.0
 REALTIME_COMMIT_TIMEOUT_S = 10.0
 _PCM_BYTES_PER_SECOND = 16000 * 2
@@ -65,8 +67,7 @@ class DailyAudioBudget:
     """
 
     def __init__(self, path: str | Path | None = None,
-                 daily_seconds: float | None = None, *, settings: Settings | None = None):
-        settings = settings or get_settings()
+                 daily_seconds: float | None = None, *, settings: Settings):
         self.path = Path(path or settings.realtime_usage_file)
         self.daily_seconds = float(
             settings.realtime_daily_seconds
@@ -181,12 +182,11 @@ class DailyAudioBudget:
                 self._write(date, max(0.0, used - seconds))
 
 
-_daily_budget = DailyAudioBudget()
 
 
-def realtime_daily_budget() -> DailyAudioBudget:
-    """Return the process-wide ledger shared by all satellite sessions."""
-    return _daily_budget
+def realtime_daily_budget(settings: Settings) -> DailyAudioBudget:
+    """Create a handle to the shared, file-locked ledger from injected settings."""
+    return DailyAudioBudget(settings=settings)
 
 
 class RealtimeScribe:
@@ -208,17 +208,16 @@ class RealtimeScribe:
 
     @classmethod
     async def connect(cls, on_partial=None, budget: DailyAudioBudget | None = None,
-                      *, settings: Settings | None = None):
-        settings = settings or get_settings()
+                      *, settings: Settings):
         key = settings.elevenlabs_api_key
         if not key:
             raise RealtimeUnavailable("ELEVENLABS_API_KEY non impostata")
-        budget = budget or realtime_daily_budget()
+        budget = budget or realtime_daily_budget(settings)
         if budget.remaining() <= 0.0:
             raise RealtimeUnavailable("daily realtime audio cap reached")
         try:
             websocket = await websockets.connect(
-                REALTIME_URL,
+                realtime_url(settings.wake_config),
                 additional_headers={"xi-api-key": key},
             )
         except Exception as exc:

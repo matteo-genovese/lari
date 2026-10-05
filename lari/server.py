@@ -11,10 +11,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 
 from .config import get_settings
-from .session import Session, USAGE_LEDGER
+from .session import Session
+from .usage import UsageLedger
 from . import protocol
 
 _SETTINGS = get_settings()
+USAGE_LEDGER = UsageLedger(settings=_SETTINGS)
 BASE_DIR = Path(__file__).resolve().parent.parent
 TOKEN = _SETTINGS.token
 SAMPLE_RATE = 16000
@@ -131,7 +133,7 @@ async def ws_endpoint(token: str, websocket: WebSocket):
         return
     await websocket.accept()
     log.info("client connesso da %s", websocket.client)
-    session = Session(websocket, _make_sender(websocket), settings=_SETTINGS)
+    session = Session(websocket, _make_sender(websocket), settings=_SETTINGS, usage_ledger=USAGE_LEDGER)
     _sessions.add(session)
     try:
         await session.start()

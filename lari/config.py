@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from pathlib import Path
 
@@ -15,7 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 @dataclass(frozen=True)
 class Settings:
-    """Immutable runtime settings, with credentials excluded from repr."""
+    """Immutable settings shareable across sessions; credentials excluded from repr."""
     hermes_root: Path
     token: str = field(repr=False)
     port: int
@@ -64,6 +64,11 @@ class Settings:
     wake_re: str
     wake_config: WakeConfig
     hf_hub_offline: str
+
+    def __post_init__(self):
+        # Preserve vosk_wake(pcm, cfg), also when dataclasses.replace changes the path.
+        object.__setattr__(self, "wake_config", replace(
+            self.wake_config, model_dir=str(self.vosk_model_dir)))
 
 
 def _number(env, name, default, kind, *, minimum=0, maximum=None, positive=False):

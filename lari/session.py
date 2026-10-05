@@ -8,30 +8,26 @@ import threading
 from threading import Thread
 import time
 from fastapi import WebSocket
-from .config import Settings, get_settings
+from .config import Settings
 from .audio import SessionAudio, save_turn_audio
 from .wake.runtime import WakeWorker
 from .stt import dispatch as _dispatch
 from .hermes import ask_hermes, stream_hermes, HermesStreamTurnError
 from .tts import Reading, TTSUnavailable
 from . import usage
-_SETTINGS = get_settings()
-USAGE_LEDGER = usage.UsageLedger()
 log = logging.getLogger("lari")
 SAMPLE_RATE = 16000
-WAKE_PROVIDER = _SETTINGS.wake_provider
 COOLDOWN_S = 2.0
-AMBIENT_PAUSE_S = _SETTINGS.ambient_pause_s
-ECHO_MUTE_S = _SETTINGS.echo_mute_s
-FOLLOWUP_S = _SETTINGS.followup_s  # after audio playback
-PLAYBACK_ACK_TIMEOUT_S = _SETTINGS.playback_ack_timeout_s
-MIN_SPEECH_S = _SETTINGS.min_speech_s
 
 class Session(SessionAudio, WakeWorker):
-    """State of one satellite connection (one device = one session)."""
+    """One satellite owns turns, playback, realtime, follow-up and UI state.
 
-    def __init__(self, ws: WebSocket, send_json, *, settings: Settings | None = None):
-        self.settings = settings or _SETTINGS
+    Immutable Settings may be shared; mutable connection state is never shared.
+    """
+
+    def __init__(self, ws: WebSocket, send_json, *, settings: Settings, usage_ledger: usage.UsageLedger | None = None):
+        self._settings = settings
+        self.usage_ledger = usage_ledger or usage.UsageLedger(settings=settings)
         self.ws = ws
         self._send_json = send_json
         self.engine = None
@@ -72,10 +68,10 @@ class Session(SessionAudio, WakeWorker):
         self.worker = Thread(target=self.wake_worker, daemon=True, name="wake-worker")
         self.worker.start()
         await self.send_json(protocol.state(
-            state="listening", phrase=self.settings.wake_config.display,
-            provider=self.settings.wake_provider, voice=self.settings.tts_voice,
-            sensitivity=self.settings.wake_sensitivity,
-            confirm_frames=self.settings.confirm_frames,
+            state="listening", phrase=self._settings.wake_config.display,
+            provider=self._settings.wake_provider, voice=self._settings.tts_voice,
+            sensitivity=self._settings.wake_sensitivity,
+            confirm_frames=self._settings.confirm_frames,
         ))
 
     async def send_json(self, data):
@@ -95,7 +91,7 @@ class Session(SessionAudio, WakeWorker):
     async def playback_completed(self, turn_id, status="completed") -> bool:
         accepted = self.mark_playback_done(turn=turn_id, status=status)
         if accepted and status == "completed":
-            await self.send_json(protocol.followup(seconds=FOLLOWUP_S))
+            await self.send_json(protocol.followup(seconds=self._settings.followup_s))
         return accepted
 
     async def interrupt(self, turn=None) -> bool:
@@ -163,7 +159,7 @@ class Session(SessionAudio, WakeWorker):
         """Ask Hermes and update only this WebSocket's transcript id."""
         turn = self.turn
         result = await ask_hermes(
-            text, settings=self.settings, session_id=self.hermes_session_id,
+            text, settings=self._settings, session_id=self.hermes_session_id,
         )
         returned_id = getattr(result, "session_id", None)
         if returned_id and self.turn == turn and not self.stop.is_set():
@@ -200,9 +196,9 @@ class Session(SessionAudio, WakeWorker):
         completed = status == "completed"
         self.playback_status = status
         if completed:
-            self.conversation_until = (time.monotonic() if now is None else now) + FOLLOWUP_S
+            self.conversation_until = (time.monotonic() if now is None else now) + self._settings.followup_s
             # The browser adds 700 ms of mute at the end of playback.
-            self.last_tts = time.time() - ECHO_MUTE_S + 0.7
+            self.last_tts = time.time() - self._settings.echo_mute_s + 0.7
         else:
             self.conversation_until = 0.0
         waiter = self._playback_waiter
@@ -217,7 +213,7 @@ class Session(SessionAudio, WakeWorker):
         if waiter is None:
             return "none"
         try:
-            return await asyncio.wait_for(asyncio.shield(waiter), PLAYBACK_ACK_TIMEOUT_S)
+            return await asyncio.wait_for(asyncio.shield(waiter), self._settings.playback_ack_timeout_s)
         except asyncio.TimeoutError:
             if self.awaiting_playback and self._same_turn(turn, self.awaiting_playback_turn):
                 self.awaiting_playback = False
@@ -247,7 +243,7 @@ class Session(SessionAudio, WakeWorker):
     async def _open_interrupted_followup(self, turn: int) -> None:
         """Open the continuation window only after the speaker echo tail."""
         try:
-            await asyncio.sleep(ECHO_MUTE_S)
+            await asyncio.sleep(self._settings.echo_mute_s)
             if (
                 self._interrupted_turn != turn
                 or self.playback_status != "interrupted"
@@ -255,9 +251,9 @@ class Session(SessionAudio, WakeWorker):
                 or self.active_turn is not None
             ):
                 return
-            self.conversation_until = time.monotonic() + FOLLOWUP_S
-            log.info("turno %d: follow-up post-interruzione attivo per %.0fs", turn, FOLLOWUP_S)
-            await self.send_json(protocol.followup(seconds=FOLLOWUP_S, interrupted=True))
+            self.conversation_until = time.monotonic() + self._settings.followup_s
+            log.info("turno %d: follow-up post-interruzione attivo per %.0fs", turn, self._settings.followup_s)
+            await self.send_json(protocol.followup(seconds=self._settings.followup_s, interrupted=True))
         except asyncio.CancelledError:
             raise
         finally:
@@ -289,7 +285,7 @@ class Session(SessionAudio, WakeWorker):
         except Exception:
             log.exception("errore durante l'interruzione del turno %s", current_turn)
 
-        await self.send_json(protocol.interrupt_ack(turn=current_turn, status="interrupted", echo_tail_ms=int(ECHO_MUTE_S * 1000)))
+        await self.send_json(protocol.interrupt_ack(turn=current_turn, status="interrupted", echo_tail_ms=int(self._settings.echo_mute_s * 1000)))
         await self.set_state("listening", turn=current_turn, interrupted=True)
         if self._interrupted_followup_task is not None:
             self._interrupted_followup_task.cancel()
@@ -317,7 +313,7 @@ class Session(SessionAudio, WakeWorker):
 
         return Reading(turn, self.send_json,
                        self.ws.send_bytes if self.ws is not None else None,
-                       started, audio_sent, lambda: self._reading_valid(turn))
+                       started, audio_sent, lambda: self._reading_valid(turn), settings=self._settings)
 
     async def _stream_hermes_speak(self, text: str, turn: int) -> tuple[str, bool, bool]:
         """Read streamed response text; never reissue a partially executed turn."""
@@ -336,7 +332,7 @@ class Session(SessionAudio, WakeWorker):
         try:
             try:
                 result = await stream_hermes(
-                    text, settings=self.settings, session_id=self.hermes_session_id,
+                    text, settings=self._settings, session_id=self.hermes_session_id,
                     on_delta=reading.feed, on_approval=on_approval,
                 )
             except Exception as exc:
@@ -409,14 +405,14 @@ class Session(SessionAudio, WakeWorker):
         # pre-roll: the wake phrase has already passed while the trigger decides,
         # so restart from the last 1.5 s already held in the rotating buffer
         prelude = bytes(initial_pcm)
-        if not prelude and WAKE_PROVIDER == "whisper":
+        if not prelude and self._settings.wake_provider == "whisper":
             prelude = self.pre_roll()
         # pause only if a reply was just played (TTS echo)
         if self.echo_muted(time.time(), 3.0):
             await asyncio.sleep(0.25)
         await self.set_state("recording", turn=turn, followup=followup_at_start)
         realtime, realtime_start_failed = await _dispatch.open_stream(
-            on_partial=lambda text: self._send_partial(text, turn),
+            on_partial=lambda text: self._send_partial(text, turn), settings=self._settings,
         )
         self._realtime = realtime
         if realtime_start_failed:
@@ -430,7 +426,7 @@ class Session(SessionAudio, WakeWorker):
             await self._clear_partial(turn)
             await self.set_state("listening")
             return
-        if pcm is None or len(pcm) < int(MIN_SPEECH_S * SAMPLE_RATE):
+        if pcm is None or len(pcm) < int(self._settings.min_speech_s * SAMPLE_RATE):
             if realtime is not None:
                 await realtime.close()
             await self._clear_partial(turn)
@@ -446,7 +442,7 @@ class Session(SessionAudio, WakeWorker):
         try:
             text = await _dispatch.transcribe_turn(
                 pcm, realtime, turn, followup_at_start,
-                start_failed=realtime_start_failed,
+                start_failed=realtime_start_failed, settings=self._settings,
             )
         except Exception as exc:
             log.exception("STT fallito")
@@ -457,11 +453,11 @@ class Session(SessionAudio, WakeWorker):
             await self._clear_partial(turn)
             await self.set_state("listening")
             return
-        if WAKE_PROVIDER == "whisper":
-            cmd = _dispatch.command_for_turn(text, followup_at_start, local_wake_confirmed)
+        if self._settings.wake_provider == "whisper":
+            cmd = _dispatch.command_for_turn(text, followup_at_start, local_wake_confirmed, self._settings)
             if cmd is None:
                 log.info("turno %d scartato (fuori dalla conversazione): %r", turn, text[:80])
-                self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
+                self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
                 await self._clear_partial(turn)
                 await self.set_state("listening", note="non era per me")
                 return
@@ -551,7 +547,7 @@ class Session(SessionAudio, WakeWorker):
         import datetime
         try:
             paid = float(getattr(self, "_turn_paid_s", 0.0) or 0.0)
-            USAGE_LEDGER.record(
+            self.usage_ledger.record(
                 datetime.date.today().isoformat(),
                 turns=1,
                 realtime_s=paid,

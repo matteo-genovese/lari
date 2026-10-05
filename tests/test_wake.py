@@ -1,4 +1,5 @@
 """Regression tests for wake recognition on real STT variants."""
+from lari.config import get_settings
 import unittest
 import tempfile
 import asyncio
@@ -25,16 +26,16 @@ class WakeTests(unittest.TestCase):
         text = ('E Lari, mi dica che tempo fara domani in centro, '
                 'che devo uscire senza ombrellone.')
         self.assertIsNotNone(LARI.command_re.search(text))
-        self.assertEqual(wake_command(text), text.split(',', 1)[1].strip())
+        self.assertEqual(wake_command(text, cfg=get_settings().wake_config), text.split(',', 1)[1].strip())
 
     def test_wake_variants_from_asr_are_accepted(self):
         # ASR renders the wake's final vowel across its confusion set
         # (lari -> lare/lary) and a consonant core with up to two spurious
         # letters (ric -> rica/rici/rick), never long lookalikes.
-        self.assertEqual(wake_command('Ehi Lare, che tempo fa?'), 'che tempo fa?')
-        self.assertEqual(wake_command('Ehi Lary, come the weather?'), 'come the weather?')
-        self.assertIsNone(wake_command('Hey Larice, che tempo fa?'))
-        self.assertIsNone(wake_command("Non c'è Larice stasera."))
+        self.assertEqual(wake_command('Ehi Lare, che tempo fa?', cfg=get_settings().wake_config), 'che tempo fa?')
+        self.assertEqual(wake_command('Ehi Lary, come the weather?', cfg=get_settings().wake_config), 'come the weather?')
+        self.assertIsNone(wake_command('Hey Larice, che tempo fa?', cfg=get_settings().wake_config))
+        self.assertIsNone(wake_command("Non c'è Larice stasera.", cfg=get_settings().wake_config))
         ric = build_wake_config('hey ric')
         self.assertEqual(ric.command('Ehi Rica, che tempo fa?'), 'che tempo fa?')
         self.assertEqual(ric.command('Ehi Rici, dimmi.'), 'dimmi.')
@@ -42,18 +43,18 @@ class WakeTests(unittest.TestCase):
         self.assertIsNone(ric.command('Hey Riccardo, che tempo fa?'))
 
     def test_does_not_trigger_on_nickname_in_background(self):
-        self.assertIsNone(wake_command('Ho parlato con Lari di lavoro.'))
+        self.assertIsNone(wake_command('Ho parlato con Lari di lavoro.', cfg=get_settings().wake_config))
 
     def test_standard_wake(self):
-        self.assertEqual(wake_command('Hey Lari, che tempo fa domani a Roma?'),
+        self.assertEqual(wake_command('Hey Lari, che tempo fa domani a Roma?', cfg=get_settings().wake_config),
                          'che tempo fa domani a Roma?')
 
     def test_followup_without_wake_only_during_conversation_window(self):
         phrase = 'E tu cosa mi consigli?'
-        self.assertIsNone(resolve_command(phrase, conversation_until=0, now=100))
-        self.assertEqual(resolve_command(phrase, conversation_until=130, now=100), phrase)
-        self.assertIsNone(resolve_command(phrase, conversation_until=99, now=100))
-        self.assertEqual(resolve_command('Hey Lari, che tempo fa?', conversation_until=0, now=100),
+        self.assertIsNone(resolve_command(phrase, conversation_until=0, now=100, cfg=get_settings().wake_config))
+        self.assertEqual(resolve_command(phrase, conversation_until=130, now=100, cfg=get_settings().wake_config), phrase)
+        self.assertIsNone(resolve_command(phrase, conversation_until=99, now=100, cfg=get_settings().wake_config))
+        self.assertEqual(resolve_command('Hey Lari, che tempo fa?', conversation_until=0, now=100, cfg=get_settings().wake_config),
                          'che tempo fa?')
 
     def test_monologue_before_the_wake_is_never_the_command(self):
@@ -74,7 +75,7 @@ class WakeTests(unittest.TestCase):
     def test_playback_ack_opens_followup_window(self):
         async def sender(_):
             pass
-        session = Session(None, sender)
+        session = Session(None, sender, settings=get_settings())
         session.awaiting_playback = True
         session.mark_playback_done(now=100.0)
         self.assertFalse(session.awaiting_playback)
@@ -85,8 +86,8 @@ class WakeTests(unittest.TestCase):
     def test_hermes_session_id_belongs_to_the_websocket_session(self):
         async def sender(_):
             pass
-        first = Session(None, sender)
-        second = Session(None, sender)
+        first = Session(None, sender, settings=get_settings())
+        second = Session(None, sender, settings=get_settings())
         first.hermes_session_id = 'first-transcript'
         second.hermes_session_id = 'second-transcript'
         self.assertNotEqual(first.hermes_session_id, second.hermes_session_id)
@@ -94,7 +95,7 @@ class WakeTests(unittest.TestCase):
     def test_preserves_quiet_wake_word_in_preroll(self):
         async def sender(_):
             pass
-        session = Session(None, sender)
+        session = Session(None, sender, settings=get_settings())
         # The wake in the pre-roll is quieter than the command; trimming must
         # never remove it even when it stays below the VAD energy threshold.
         wake = np.full(16000, 250, dtype=np.int16)
@@ -109,7 +110,7 @@ class WakeTests(unittest.TestCase):
     def test_long_request_survives_a_natural_pause(self):
         async def sender(_):
             pass
-        session = Session(None, sender)
+        session = Session(None, sender, settings=get_settings())
         voice = np.full(16000, 3000, dtype=np.int16)
         silence = np.zeros(16000, dtype=np.int16)
         # 15s spoken + 2s pause + second part: never end at 12s nor inside
@@ -142,7 +143,7 @@ class WakeTests(unittest.TestCase):
         async def send(message):
             sent.append(message)
 
-        session = Session(None, send)
+        session = Session(None, send, settings=get_settings())
         session._partial_turn = 4
         asyncio.run(session._clear_partial(5))
         asyncio.run(session._clear_partial(5))
@@ -163,7 +164,7 @@ class WakeTests(unittest.TestCase):
                 self.chunks.append(chunk)
                 return True
 
-        session = Session(None, send)
+        session = Session(None, send, settings=get_settings())
         quiet = np.zeros(1600, dtype=np.int16).tobytes()
         voice = np.full(1600, 3000, dtype=np.int16).tobytes()
         chunks = [quiet, voice, quiet]

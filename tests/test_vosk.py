@@ -1,4 +1,6 @@
 """Unit tests for local Vosk wake and transcription routing."""
+from dataclasses import replace
+from lari.config import get_settings
 import json
 import sys
 import types
@@ -22,22 +24,22 @@ class VoskRoutingTests(unittest.TestCase):
     def test_unaddressed_speech_is_rejected_before_transcription(self):
         with patch.object(dispatch, "vosk_wake", return_value=False) as wake, \
              patch.object(dispatch, "transcribe_vosk") as transcribe:
-            result = dispatch.decode_utterance(self.audio, followup=False, backend="vosk")
+            result = dispatch.decode_utterance(self.audio, followup=False, backend="vosk", settings=get_settings())
         self.assertIsNone(result)
         wake.assert_called_once()
         transcribe.assert_not_called()
 
     def test_configured_wake_phrase_is_removed_from_the_command(self):
-        transcript = f"{detector.WAKE_PHRASE}, please help"
+        transcript = f"{get_settings().wake_config.phrase}, please help"
         with patch.object(dispatch, "vosk_wake", return_value=True), \
              patch.object(dispatch, "transcribe_vosk", return_value=transcript):
-            result = dispatch.decode_utterance(self.audio, followup=False, backend="vosk")
+            result = dispatch.decode_utterance(self.audio, followup=False, backend="vosk", settings=get_settings())
         self.assertEqual(result, "please help")
 
     def test_followup_transcription_does_not_require_another_wake(self):
         with patch.object(dispatch, "vosk_wake") as wake, \
              patch.object(dispatch, "transcribe_vosk", return_value="follow-up question"):
-            result = dispatch.decode_utterance(self.audio, followup=True, backend="vosk")
+            result = dispatch.decode_utterance(self.audio, followup=True, backend="vosk", settings=get_settings())
         self.assertEqual(result, "follow-up question")
         wake.assert_not_called()
 
@@ -77,11 +79,11 @@ class VoskSessionTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             sent.append(message)
 
-        session = session_module.Session(None, send)
+        session = session_module.Session(None, send, settings=get_settings())
         session._record_utterance = AsyncMock(return_value=np.ones(audio_module.SAMPLE_RATE, dtype=np.int16))
         session._speak = AsyncMock()
         session._record_usage = Mock()
-        with patch.object(dispatch, "STT_BACKEND", "vosk"), \
+        with patch.object(session, "_settings", replace(session._settings, stt_backend="vosk")), \
              patch.object(session_module, "save_turn_audio", return_value=Path("fake.wav")), \
              patch.object(dispatch, "decode_utterance", return_value="please help") as decode, \
              patch.object(session_module, "stream_hermes", new_callable=AsyncMock, return_value="How can I help?") as agent:

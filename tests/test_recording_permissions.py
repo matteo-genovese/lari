@@ -1,3 +1,4 @@
+from lari.config import get_settings
 import os
 import stat
 import tempfile
@@ -26,7 +27,7 @@ class RecordingPermissionsTests(unittest.IsolatedAsyncioTestCase):
         websocket = Mock()
         websocket.accept = AsyncMock()
         websocket.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
-        session = session_module.Session(websocket, AsyncMock())
+        session = session_module.Session(websocket, AsyncMock(), settings=get_settings())
         session.recent.extend(self.data)
         with tempfile.TemporaryDirectory() as root, \
              patch.object(audio_module, "BASE_DIR", Path(root)), \
@@ -40,7 +41,7 @@ class RecordingPermissionsTests(unittest.IsolatedAsyncioTestCase):
             self.assert_recording(files[0])
 
     async def test_debug_recording_is_owner_only(self):
-        session = session_module.Session(None, AsyncMock())
+        session = session_module.Session(None, AsyncMock(), settings=get_settings())
         session.recent.extend(self.data)
         with tempfile.TemporaryDirectory() as root, \
              patch.object(server.tempfile, "tempdir", root), \

@@ -18,6 +18,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from lari.config import get_settings
 from lari.stt import providers as stt_backends  # noqa: E402
 
 
@@ -35,16 +36,17 @@ def main() -> int:
     parser.add_argument("wav", nargs="+", type=Path, help="one or more mono 16 kHz WAV files")
     args = parser.parse_args()
 
+    settings = get_settings()
     jobs = []
     for backend in stt_backends.BACKENDS:
         key_env = stt_backends.KEY_ENV[backend]
         if os.environ.get(key_env, "").strip():
-            jobs.append((backend, lambda pcm, selected=backend: stt_backends.transcribe(pcm, selected)))
+            jobs.append((backend, lambda pcm, selected=backend: stt_backends.transcribe(pcm, selected, settings=settings)))
     if args.local:
         from lari.stt.vosk import transcribe_vosk
-        from lari.stt.local import transcribe
-        jobs.extend((("vosk (local)", transcribe_vosk),
-                     ("faster-whisper (local)", transcribe)))
+        from lari.stt.local import transcribe as transcribe_local
+        jobs.extend((("vosk (local)", lambda pcm: transcribe_vosk(pcm, settings.wake_config)),
+                     ("faster-whisper (local)", lambda pcm: transcribe_local(pcm, settings.wake_config, settings.stt_model, settings.stt_lang))))
     if not jobs:
         parser.error("no provider keys are set; use --local or configure a provider key")
 

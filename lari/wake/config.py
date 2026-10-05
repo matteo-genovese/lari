@@ -124,6 +124,7 @@ def _twin(phrase: str) -> str:
 
 @dataclass(frozen=True)
 class WakeConfig:
+    """Immutable wake vocabulary and injected local model location."""
     phrase: str
     display: str
     twin_display: str
@@ -142,6 +143,7 @@ class WakeConfig:
     mention_re: re.Pattern
     doubt_starters: tuple[str, ...] = ()
     junk_words: tuple[str, ...] = field(default=())
+    model_dir: str | None = None
 
     def command(self, text: str) -> str | None:
         """Return the request after the wake; None when not addressed to us."""

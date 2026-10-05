@@ -4,7 +4,7 @@ Large V3 Turbo, C) OpenAI Whisper API (the cloud path of OpenWhispr).
 Privacy: these send the utterance audio to the provider. Keys come from the
 environment (never logged): ELEVENLABS_API_KEY, GROQ_API_KEY, OPENAI_API_KEY.
 
-Interface: transcribe(pcm_int16_16k_mono, backend) -> text.
+Interface: transcribe(pcm_int16_16k_mono, backend, settings=settings) -> text.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import wave
 
 import numpy as np
 
-from ..config import Settings, get_settings
+from ..config import Settings
 
 log = logging.getLogger(__name__)
 
@@ -24,16 +24,6 @@ KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
-# Wake-derived ASR bias terms: keyterms, style prompt and the realtime URL all
-# derive from the configured wake phrase plus the optional LARI_STT_KEYTERMS
-# vocabulary (names and places the ASR misrenders).
-_WAKE = get_settings().wake_config
-# ElevenLabs batch keyterms (<= 5 words each, <= 1000 total). Scribe v2 with
-# keyterms costs +20% over the base rate.
-KEYTERMS = list(_WAKE.batch_keyterms)
-# Groq/OpenAI accept only a style prompt (max 224 tokens for Groq).
-STYLE_PROMPT = _WAKE.style_prompt
-
 
 def _to_wav(pcm: np.ndarray) -> bytes:
     buf = io.BytesIO()
@@ -68,12 +58,12 @@ def _post_multipart(url: str, headers: dict, data_tuples: list,
         return response.json()
 
 
-def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings | None = None) -> str:
+def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings) -> str:
+    """Use credentials and wake-derived bias terms from the caller's Settings."""
     pcm = np.asarray(pcm, dtype=np.int16)
     if backend not in BACKENDS:
         raise ValueError(f"backend STT cloud sconosciuto: {backend}")
     key_env = KEY_ENV[backend]
-    settings = settings or get_settings()
     key = getattr(settings, key_env.lower())
     if not key:
         raise RuntimeError(f"{key_env} non impostata: aggiungila in desk-buddy/.env")
@@ -87,7 +77,7 @@ def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings | None = Non
                 [("model_id", "scribe_v2"),
                  ("language_code", "it"),
                  ("file_format", "pcm_s16le_16")]
-                + [("keyterms", term) for term in KEYTERMS]
+                + [("keyterms", term) for term in settings.wake_config.batch_keyterms]
             ),
             file_bytes=pcm.tobytes(),
             filename="audio.pcm",
@@ -99,7 +89,7 @@ def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings | None = Non
             headers={"Authorization": f"Bearer {key}"},
             data_tuples=[("model", settings.groq_model),
                          ("language", "it"),
-                         ("prompt", STYLE_PROMPT),
+                         ("prompt", settings.wake_config.style_prompt),
                          ("response_format", "json")],
             file_bytes=_to_wav(pcm),
             filename="audio.wav",
@@ -111,7 +101,7 @@ def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings | None = Non
             headers={"Authorization": f"Bearer {key}"},
             data_tuples=[("model", "whisper-1"),
                          ("language", "it"),
-                         ("prompt", STYLE_PROMPT)],
+                         ("prompt", settings.wake_config.style_prompt)],
             file_bytes=_to_wav(pcm),
             filename="audio.wav",
             mime="audio/wav",

@@ -2,31 +2,24 @@
 from __future__ import annotations
 import logging
 import numpy as np
-from ..config import get_settings
-_SETTINGS = get_settings()
+from ..config import Settings
 log = logging.getLogger("lari")
 SAMPLE_RATE = 16000
-WAKE_CONFIG = _SETTINGS.wake_config
 import json
 import sys
 import threading
 from . import config as wake_config
-sys.path.insert(0, str(_SETTINGS.hermes_root))
-VOSK_MODEL_DIR = _SETTINGS.vosk_model_dir
-WAKE_PROVIDER = _SETTINGS.wake_provider
-WAKE_PHRASE = WAKE_CONFIG.phrase
-WAKE_SENSITIVITY = _SETTINGS.wake_sensitivity
-CONFIRM_FRAMES = _SETTINGS.confirm_frames
-_vosk_model = None
+_vosk_models = {}
 _vosk_lock = threading.Lock()
 
-def _wake_engine_builder():
+def _wake_engine_builder(hermes_root):
     """Lazy loader for the optional openwakeword engine from the Hermes source.
 
     The default wake provider (energy VAD + Vosk) never needs it; importing it
     lazily keeps the bridge importable without a Hermes checkout (CI, fresh
     installs).
     """
+    sys.path.insert(0, str(hermes_root))
     try:
         from tools.wake_word import _build_engine  # noqa: PLC0415
     except ImportError as exc:
@@ -37,13 +30,13 @@ def _wake_engine_builder():
     return _build_engine
 
 
-def wake_command(text: str, cfg: wake_config.WakeConfig | None = None) -> str | None:
+def wake_command(text: str, cfg: wake_config.WakeConfig) -> str | None:
     """Return the request after the wake; None when not addressed to us."""
-    return (cfg or WAKE_CONFIG).command(text)
+    return cfg.command(text)
 
 
 def resolve_command(text: str, conversation_until: float, now: float,
-                    cfg: wake_config.WakeConfig | None = None) -> str | None:
+                    cfg: wake_config.WakeConfig) -> str | None:
     """Wake on the first turn, then free dialog only inside the follow-up window."""
     command = wake_command(text, cfg)
     if command is not None:
@@ -53,22 +46,23 @@ def resolve_command(text: str, conversation_until: float, now: float,
     return None
 
 
-def get_vosk():
-    """Load the small Italian model once; one recognizer per call."""
-    global _vosk_model
+def get_vosk(model_dir):
+    """Share heavy models by path across sessions; recognizers remain per call."""
+    if model_dir is None:
+        raise ValueError("inject the Vosk model path through Settings.wake_config")
+    model_dir = str(model_dir)
     with _vosk_lock:
-        if _vosk_model is None:
+        if model_dir not in _vosk_models:
             from vosk import Model, SetLogLevel
             SetLogLevel(-1)
-            _vosk_model = Model(str(VOSK_MODEL_DIR))
-        return _vosk_model
+            _vosk_models[model_dir] = Model(str(model_dir))
+        return _vosk_models[model_dir]
 
 
-def vosk_wake(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> bool:
+def vosk_wake(pcm: np.ndarray, cfg: wake_config.WakeConfig) -> bool:
     """Detect the wake in the first 2.5 s without forcing the rest through the grammar."""
     from vosk import KaldiRecognizer
-    cfg = cfg or WAKE_CONFIG
-    rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE, json.dumps(list(cfg.grammar)))
+    rec = KaldiRecognizer(get_vosk(cfg.model_dir), SAMPLE_RATE, json.dumps(list(cfg.grammar)))
     rec.AcceptWaveform(pcm[:int(2.5 * SAMPLE_RATE)].astype(np.int16, copy=False).tobytes())
     heard = json.loads(rec.FinalResult()).get("text", "")
     log.info("Vosk wake: %r", heard)
@@ -76,10 +70,9 @@ def vosk_wake(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> boo
 
 
 def resolve_vosk_command(text: str, wake: bool, followup: bool,
-                         cfg: wake_config.WakeConfig | None = None) -> str | None:
+                         cfg: wake_config.WakeConfig) -> str | None:
     if not wake and not followup:
         return None
-    cfg = cfg or WAKE_CONFIG
     if wake:
         command = wake_command(text, cfg)
         if command is not None:
@@ -90,16 +83,16 @@ def resolve_vosk_command(text: str, wake: bool, followup: bool,
     return text.strip()
 
 
-def make_engine():
+def make_engine(settings: Settings):
     cfg = {
-        "provider": WAKE_PROVIDER,
-        "phrase": WAKE_PHRASE,
-        "sensitivity": WAKE_SENSITIVITY,
-        "confirmation_frames": CONFIRM_FRAMES,
+        "provider": settings.wake_provider,
+        "phrase": settings.wake_config.phrase,
+        "sensitivity": settings.wake_sensitivity,
+        "confirmation_frames": settings.confirm_frames,
         "profile_routing": False,   # only the bridge's phrase: no Hermes profile routing
         "openwakeword": {"model": "hey_hermes"},
     }
-    return _wake_engine_builder()(cfg)
+    return _wake_engine_builder(settings.hermes_root)(cfg)
 
 
 def __getattr__(name):

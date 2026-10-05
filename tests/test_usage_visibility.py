@@ -1,4 +1,6 @@
 """Telemetry reports provider audio, not inferred mascot states."""
+from dataclasses import replace
+from lari.config import get_settings
 from lari import session as session_module
 from lari.stt import dispatch
 from lari.stt import realtime
@@ -26,7 +28,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
                 self.chunks.append(chunk)
                 return True
 
-        session = session_module.Session(None, send)
+        session = session_module.Session(None, send, settings=get_settings())
         session.turn = 7
         prelude = np.full(1600, 3000, dtype=np.int16).tobytes()
         quiet = np.zeros(1600, dtype=np.int16).tobytes()
@@ -49,7 +51,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
             async def send_audio(self, _chunk):
                 return False
 
-        session = session_module.Session(None, send)
+        session = session_module.Session(None, send, settings=get_settings())
         session.turn = 8
         prelude = np.full(1600, 3000, dtype=np.int16).tobytes()
         session.recv_queue.put_nowait(None)
@@ -64,9 +66,9 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
 
-        session = session_module.Session(None, send)
+        session = session_module.Session(None, send, settings=get_settings())
         session._record_utterance = AsyncMock(return_value=None)
-        with patch.object(dispatch, "STT_BACKEND", realtime.REALTIME_BACKEND), \
+        with patch.object(session, "_settings", replace(session._settings, stt_backend=realtime.REALTIME_BACKEND)), \
              patch.object(realtime.RealtimeScribe, "connect", new_callable=AsyncMock,
                           side_effect=realtime.RealtimeUnavailable("unavailable")):
             await session._on_wake(local_wake_confirmed=True)
@@ -80,10 +82,10 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
 
-        session = session_module.Session(None, send)
+        session = session_module.Session(None, send, settings=get_settings())
         session.conversation_until = time.monotonic() + 30
         session._record_utterance = AsyncMock(return_value=None)
-        with patch.object(dispatch, "STT_BACKEND", realtime.REALTIME_BACKEND), \
+        with patch.object(session, "_settings", replace(session._settings, stt_backend=realtime.REALTIME_BACKEND)), \
              patch.object(realtime.RealtimeScribe, "connect", new_callable=AsyncMock,
                           side_effect=realtime.RealtimeUnavailable("unavailable")):
             await session._on_wake(local_wake_confirmed=False)

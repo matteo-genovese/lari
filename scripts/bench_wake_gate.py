@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lari.wake.detector import vosk_wake
 from lari.stt.local import transcribe
 from lari.stt.vosk import transcribe_vosk
-from lari.config import load_settings
+from lari.config import get_settings
 
 
 def load(path: Path) -> np.ndarray:
@@ -31,8 +31,9 @@ def load(path: Path) -> np.ndarray:
 
 
 def main(argv: list[str]) -> int:
-    cfg = load_settings().wake_config
-    print(f"phrase={cfg.phrase!r} model={load_settings().stt_model!r}")
+    settings = get_settings()
+    cfg = settings.wake_config
+    print(f"phrase={cfg.phrase!r} model={settings.stt_model!r}")
     print(f"{'clip':<42} {'dur':>5} {'gateA':>5} {'free/whisper clean':>20} "
           f"{'verdict':>7} {'t_add':>6}")
     saved, candidates, added = 0.0, 0, []
@@ -48,11 +49,11 @@ def main(argv: list[str]) -> int:
             continue
         candidates += 1
         t0 = time.monotonic()
-        free = transcribe_vosk(prefix)
+        free = transcribe_vosk(prefix, cfg)
         free_clean = cfg.confidently_clean(free)
         heard = ""
         if free_clean:
-            heard = transcribe(prefix)
+            heard = transcribe(prefix, cfg, settings.stt_model, settings.stt_lang)
         elapsed = time.monotonic() - t0
         added.append(elapsed)
         passed = not (free_clean and cfg.confidently_clean(heard))

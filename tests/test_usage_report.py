@@ -1,4 +1,5 @@
 """Monthly usage report: persistent ledger and the /usage route."""
+from lari.config import get_settings
 import asyncio
 import datetime
 import tempfile
@@ -19,9 +20,9 @@ class UsageLedgerTests(unittest.TestCase):
         self.path = Path(self.dir.name) / "usage.json"
 
     def test_records_persist_across_instances(self):
-        ledger = usage.UsageLedger(self.path)
+        ledger = usage.UsageLedger(self.path, settings=get_settings())
         ledger.record("2026-09-29", turns=2, realtime_s=30.0, local_turns=1)
-        fresh = usage.UsageLedger(self.path)
+        fresh = usage.UsageLedger(self.path, settings=get_settings())
         summary = fresh.month_summary("2026-09")
         self.assertEqual(summary["turns"], 2)
         self.assertEqual(summary["local_turns"], 1)
@@ -29,7 +30,7 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertEqual(summary["realtime_min"], 0.5)
 
     def test_month_summary_aggregates_only_that_month(self):
-        ledger = usage.UsageLedger(self.path)
+        ledger = usage.UsageLedger(self.path, settings=get_settings())
         ledger.record("2026-09-01", turns=1, realtime_s=60.0)
         ledger.record("2026-08-31", turns=5, realtime_s=600.0)
         summary = ledger.month_summary("2026-09")
@@ -38,7 +39,7 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertIsNone(summary["est_eur"])
 
     def test_estimate_uses_the_configured_rate_only(self):
-        ledger = usage.UsageLedger(self.path)
+        ledger = usage.UsageLedger(self.path, settings=get_settings())
         ledger.record("2026-09-29", realtime_s=120.0)
         summary = ledger.month_summary("2026-09", eur_per_min=0.5)
         self.assertEqual(summary["est_eur"], 1.0)
@@ -48,7 +49,7 @@ class UsageRouteTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        ledger = usage.UsageLedger(Path(self.dir.name) / "usage.json")
+        ledger = usage.UsageLedger(Path(self.dir.name) / "usage.json", settings=get_settings())
         ledger.record(datetime.date.today().isoformat(),
                       turns=3, realtime_s=45.0, local_turns=2)
         for name, target in (("TOKEN", "unit-test-token"), ("USAGE_LEDGER", ledger)):

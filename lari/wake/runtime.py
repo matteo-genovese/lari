@@ -5,25 +5,19 @@ import logging
 import queue
 import time
 import numpy as np
-from ..config import get_settings
 from .detector import make_engine, vosk_wake
 from .confirm import confirm_candidate
-_SETTINGS = get_settings()
-WAKE_PROVIDER = _SETTINGS.wake_provider
-ECHO_MUTE_S = _SETTINGS.echo_mute_s
 COOLDOWN_S = 2.0
 FRAME = 1280
-WAKE_CONFIRM = _SETTINGS.wake_confirm
-AMBIENT_PAUSE_S = _SETTINGS.ambient_pause_s
 log = logging.getLogger("lari")
 
 
 class WakeWorker:
     def wake_worker(self):
         self.engine = None
-        if WAKE_PROVIDER != "whisper":
+        if self._settings.wake_provider != "whisper":
             try:
-                self.engine = make_engine()
+                self.engine = make_engine(self._settings)
             except Exception:
                 log.exception("impossibile creare l'engine wake")
                 asyncio.run_coroutine_threadsafe(
@@ -72,7 +66,7 @@ class WakeWorker:
                 rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
                 stat_peak = max(stat_peak, rms)
                 thr = self.update_noise_floor(rms)
-                if WAKE_PROVIDER == "whisper":
+                if self._settings.wake_provider == "whisper":
                     speech_streak = speech_streak + 1 if rms >= thr else 0
                     need = 3 if self.noise_floor < 2000 else 8
                     hit = speech_streak >= need
@@ -83,7 +77,7 @@ class WakeWorker:
                         log.exception("errore engine")
                         hit = False
                 now = time.time()
-                if hit and self.echo_muted(now, ECHO_MUTE_S):
+                if hit and self.echo_muted(now, self._settings.echo_mute_s):
                     continue
                 if hit and now - self.last_wake >= COOLDOWN_S and rms > 200:
                     prelude = self.pre_roll()
@@ -107,15 +101,15 @@ class WakeWorker:
         followup = time.monotonic() < self.conversation_until and not self.awaiting_playback
         if not followup:
             pcm = np.frombuffer(candidate, dtype=np.int16)
-            if not vosk_wake(pcm):
+            if not vosk_wake(pcm, self._settings.wake_config):
                 log.info("candidato parlato scartato dal gate Vosk locale")
-                self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
+                self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
                 return False
-            if WAKE_CONFIRM and not confirm_candidate(pcm):
+            if self._settings.wake_confirm and not confirm_candidate(pcm, self._settings.wake_config, model=self._settings.stt_model, language=self._settings.stt_lang):
                 log.info("candidato scartato dal secondo gate locale")
-                self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
+                self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
                 return False
-        if self.echo_muted(time.time(), ECHO_MUTE_S):
+        if self.echo_muted(time.time(), self._settings.echo_mute_s):
             return False
         self.last_wake = time.time()
         self.state = "waking"

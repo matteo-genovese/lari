@@ -2,22 +2,18 @@
 from __future__ import annotations
 import logging
 import numpy as np
-from ..config import get_settings
-_SETTINGS = get_settings()
+from ..wake.config import WakeConfig
 log = logging.getLogger("lari")
 SAMPLE_RATE = 16000
-WAKE_CONFIG = _SETTINGS.wake_config
 import re
 import threading
-STT_MODEL = _SETTINGS.stt_model
-STT_LANG = _SETTINGS.stt_lang
 _stt = {}
 _stt_lock = threading.Lock()
 
-def get_stt(model: str | None = None):
-    """Lazy singleton for faster-whisper (the base model weighs ~150 MB; load it once)."""
+def get_stt(model: str):
+    """Share heavy Whisper models by name across sessions; decode state stays per call."""
     with _stt_lock:
-        name = model or STT_MODEL
+        name = model
         if name not in _stt:
             from faster_whisper import WhisperModel
             log.info("caricamento STT model=%s", name)
@@ -25,12 +21,12 @@ def get_stt(model: str | None = None):
         return _stt[name]
 
 
-def transcribe(pcm: np.ndarray, model: str | None = None) -> str:
+def transcribe(pcm: np.ndarray, cfg: WakeConfig, model: str, language: str) -> str:
     """pcm: int16 16 kHz mono -> text."""
     audio = pcm.astype(np.float32) / 32768.0
     # FIXED language: auto-detection on short noisy clips goes haywire
     # (it once returned Japanese). Empty ("") = auto.
-    lang = STT_LANG or None
+    lang = language or None
     segments, info = get_stt(model).transcribe(
         audio,
         language=lang,
@@ -42,7 +38,7 @@ def transcribe(pcm: np.ndarray, model: str | None = None) -> str:
         condition_on_previous_text=False,   # otherwise the model feeds itself repetitions
         # SHORT prompt: a long prompt gets repeated by the ASR instead of the audio
         # (hallucination), especially on noisy recordings
-        initial_prompt=WAKE_CONFIG.prompt,
+        initial_prompt=cfg.prompt,
     )
     text = " ".join(s.text for s in segments).strip()
     log.info("STT lang=%s prob=%.2f -> %r", info.language, info.language_probability, text)
