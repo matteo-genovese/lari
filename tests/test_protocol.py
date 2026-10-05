@@ -8,7 +8,8 @@ from lari import server
 
 class WebSocketAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_controls_and_pcm_are_forwarded_and_cleanup_is_awaited(self):
-        ws = Mock(accept=AsyncMock(), close=AsyncMock())
+        ws = Mock(accept=AsyncMock(), close=AsyncMock(),
+                  send_json=AsyncMock(), send_bytes=AsyncMock())
         ws.receive = AsyncMock(side_effect=[
             {"bytes": b"\x01\x00"},
             {"text": "{"},
@@ -33,6 +34,11 @@ class WebSocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         ws.accept.assert_awaited_once()
         factory.assert_called_once()
         self.assertIs(factory.call_args.kwargs["settings"], server._SETTINGS)
+        send_json, send_audio = factory.call_args.args
+        await send_json({"type": "pong", "state": "listening"})
+        await send_audio(b"ID3\x00\xff")
+        ws.send_json.assert_awaited_once_with({"type": "pong", "state": "listening"})
+        ws.send_bytes.assert_awaited_once_with(b"ID3\x00\xff")
         session.start.assert_awaited_once()
         session.on_audio.assert_awaited_once_with(b"\x01\x00")
         session.playback_completed.assert_awaited_once_with(4, status="failed")

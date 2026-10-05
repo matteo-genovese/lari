@@ -7,7 +7,6 @@ import queue
 import threading
 from threading import Thread
 import time
-from fastapi import WebSocket
 from .config import Settings
 from .audio import SessionAudio, save_turn_audio
 from .wake.runtime import WakeWorker
@@ -25,10 +24,10 @@ class Session(SessionAudio, WakeWorker):
     Immutable Settings may be shared; mutable connection state is never shared.
     """
 
-    def __init__(self, ws: WebSocket, send_json, *, settings: Settings, usage_ledger: usage.UsageLedger | None = None):
+    def __init__(self, send_json, send_audio, *, settings: Settings, usage_ledger: usage.UsageLedger | None = None):
         self._settings = settings
         self.usage_ledger = usage_ledger or usage.UsageLedger(settings=settings)
-        self.ws = ws
+        self._send_audio = send_audio
         self._send_json = send_json
         self.engine = None
         self.state = "listening"           # the worker starts listening immediately
@@ -156,7 +155,7 @@ class Session(SessionAudio, WakeWorker):
         await self.send_json(protocol.partial_transcript(text="", turn=partial_turn))
 
     async def _ask_hermes(self, text: str) -> str:
-        """Ask Hermes and update only this WebSocket's transcript id."""
+        """Ask Hermes and update only this session's transcript id."""
         turn = self.turn
         result = await ask_hermes(
             text, settings=self._settings, session_id=self.hermes_session_id,
@@ -312,7 +311,7 @@ class Session(SessionAudio, WakeWorker):
             self.last_tts = time.time()
 
         return Reading(turn, self.send_json,
-                       self.ws.send_bytes if self.ws is not None else None,
+                       self._send_audio,
                        started, audio_sent, lambda: self._reading_valid(turn), settings=self._settings)
 
     async def _stream_hermes_speak(self, text: str, turn: int) -> tuple[str, bool, bool]:

@@ -13,6 +13,10 @@ import numpy as np
 
 
 
+async def send_audio(chunk):
+    pass
+
+
 class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_provider_audio_is_reported_once_per_turn(self):
         messages = []
@@ -28,7 +32,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
                 self.chunks.append(chunk)
                 return True
 
-        session = session_module.Session(None, send, settings=get_settings())
+        session = session_module.Session(send, send_audio, settings=get_settings())
         session.turn = 7
         prelude = np.full(1600, 3000, dtype=np.int16).tobytes()
         quiet = np.zeros(1600, dtype=np.int16).tobytes()
@@ -51,7 +55,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
             async def send_audio(self, _chunk):
                 return False
 
-        session = session_module.Session(None, send, settings=get_settings())
+        session = session_module.Session(send, send_audio, settings=get_settings())
         session.turn = 8
         prelude = np.full(1600, 3000, dtype=np.int16).tobytes()
         session.recv_queue.put_nowait(None)
@@ -66,7 +70,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
 
-        session = session_module.Session(None, send, settings=get_settings())
+        session = session_module.Session(send, send_audio, settings=get_settings())
         session._record_utterance = AsyncMock(return_value=None)
         with patch.object(session, "_settings", replace(session._settings, stt_backend=realtime.REALTIME_BACKEND)), \
              patch.object(realtime.RealtimeScribe, "connect", new_callable=AsyncMock,
@@ -82,7 +86,7 @@ class UsageVisibilityTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
 
-        session = session_module.Session(None, send, settings=get_settings())
+        session = session_module.Session(send, send_audio, settings=get_settings())
         session.conversation_until = time.monotonic() + 30
         session._record_utterance = AsyncMock(return_value=None)
         with patch.object(session, "_settings", replace(session._settings, stt_backend=realtime.REALTIME_BACKEND)), \

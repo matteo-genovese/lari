@@ -19,6 +19,10 @@ from lari.wake.config import build_wake_config
 LARI = build_wake_config("hey lari")
 
 
+async def send_audio(chunk):
+    pass
+
+
 class ConfirmedAbsenceTests(unittest.TestCase):
     def test_clear_non_wake_speech_from_both_recognizers_is_vetoed(self):
         self.assertTrue(LARI.confirmed_absent(
@@ -86,7 +90,7 @@ class SecondGateWiringTests(unittest.TestCase):
     def test_vetoed_candidate_never_schedules_a_turn(self):
         async def sender(_):
             pass
-        session = session_module.Session(None, sender, settings=get_settings())
+        session = session_module.Session(sender, send_audio, settings=get_settings())
         with patch.object(session, "_settings", replace(session._settings, wake_confirm=True)), \
              patch.object(runtime, "vosk_wake", return_value=True), \
              patch.object(runtime, "confirm_candidate", return_value=False), \
@@ -99,7 +103,7 @@ class SecondGateWiringTests(unittest.TestCase):
     def test_disabled_second_gate_keeps_the_single_gate_path(self):
         async def sender(_):
             pass
-        session = session_module.Session(None, sender, settings=get_settings())
+        session = session_module.Session(sender, send_audio, settings=get_settings())
         with patch.object(session, "_settings", replace(session._settings, wake_confirm=False)), \
              patch.object(runtime, "vosk_wake", return_value=True), \
              patch.object(runtime, "confirm_candidate",

@@ -133,7 +133,17 @@ async def ws_endpoint(token: str, websocket: WebSocket):
         return
     await websocket.accept()
     log.info("client connesso da %s", websocket.client)
-    session = Session(websocket, _make_sender(websocket), settings=_SETTINGS, usage_ledger=USAGE_LEDGER)
+
+    async def send_json(data):
+        try:
+            await websocket.send_json(data)
+        except Exception:
+            pass
+
+    async def send_audio(chunk):
+        await websocket.send_bytes(chunk)
+
+    session = Session(send_json, send_audio, settings=_SETTINGS, usage_ledger=USAGE_LEDGER)
     _sessions.add(session)
     try:
         await session.start()
@@ -164,16 +174,6 @@ async def ws_endpoint(token: str, websocket: WebSocket):
         await session.disconnect()
         _sessions.discard(session)
         log.info("sessione chiusa")
-
-
-def _make_sender(websocket: WebSocket):
-    async def send(data: dict):
-        try:
-            await websocket.send_text(json.dumps(data))
-        except Exception:
-            pass
-
-    return send
 
 
 @app.on_event("startup")

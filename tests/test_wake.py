@@ -21,6 +21,10 @@ wake_command = partial(_wake_command, cfg=LARI)
 resolve_command = partial(_resolve_command, cfg=LARI)
 
 
+async def send_audio(chunk):
+    pass
+
+
 class WakeTests(unittest.TestCase):
     def test_real_phone_transcript_is_not_discarded(self):
         text = ('E Lari, mi dica che tempo fara domani in centro, '
@@ -75,7 +79,7 @@ class WakeTests(unittest.TestCase):
     def test_playback_ack_opens_followup_window(self):
         async def sender(_):
             pass
-        session = Session(None, sender, settings=get_settings())
+        session = Session(sender, send_audio, settings=get_settings())
         session.awaiting_playback = True
         session.mark_playback_done(now=100.0)
         self.assertFalse(session.awaiting_playback)
@@ -86,8 +90,8 @@ class WakeTests(unittest.TestCase):
     def test_hermes_session_id_belongs_to_the_websocket_session(self):
         async def sender(_):
             pass
-        first = Session(None, sender, settings=get_settings())
-        second = Session(None, sender, settings=get_settings())
+        first = Session(sender, send_audio, settings=get_settings())
+        second = Session(sender, send_audio, settings=get_settings())
         first.hermes_session_id = 'first-transcript'
         second.hermes_session_id = 'second-transcript'
         self.assertNotEqual(first.hermes_session_id, second.hermes_session_id)
@@ -95,7 +99,7 @@ class WakeTests(unittest.TestCase):
     def test_preserves_quiet_wake_word_in_preroll(self):
         async def sender(_):
             pass
-        session = Session(None, sender, settings=get_settings())
+        session = Session(sender, send_audio, settings=get_settings())
         # The wake in the pre-roll is quieter than the command; trimming must
         # never remove it even when it stays below the VAD energy threshold.
         wake = np.full(16000, 250, dtype=np.int16)
@@ -110,7 +114,7 @@ class WakeTests(unittest.TestCase):
     def test_long_request_survives_a_natural_pause(self):
         async def sender(_):
             pass
-        session = Session(None, sender, settings=get_settings())
+        session = Session(sender, send_audio, settings=get_settings())
         voice = np.full(16000, 3000, dtype=np.int16)
         silence = np.zeros(16000, dtype=np.int16)
         # 15s spoken + 2s pause + second part: never end at 12s nor inside
@@ -143,7 +147,7 @@ class WakeTests(unittest.TestCase):
         async def send(message):
             sent.append(message)
 
-        session = Session(None, send, settings=get_settings())
+        session = Session(send, send_audio, settings=get_settings())
         session._partial_turn = 4
         asyncio.run(session._clear_partial(5))
         asyncio.run(session._clear_partial(5))
@@ -164,7 +168,7 @@ class WakeTests(unittest.TestCase):
                 self.chunks.append(chunk)
                 return True
 
-        session = Session(None, send, settings=get_settings())
+        session = Session(send, send_audio, settings=get_settings())
         quiet = np.zeros(1600, dtype=np.int16).tobytes()
         voice = np.full(1600, 3000, dtype=np.int16).tobytes()
         chunks = [quiet, voice, quiet]

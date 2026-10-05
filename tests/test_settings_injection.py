@@ -14,13 +14,17 @@ from lari.stt import dispatch, local, providers, realtime
 from lari.wake import detector, runtime
 
 
+async def send_audio(chunk):
+    pass
+
+
 class SettingsInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_custom_followup_and_echo_are_observable(self):
         process = get_settings()
         settings = replace(process, followup_s=process.followup_s + 13,
                            echo_mute_s=process.echo_mute_s + 4)
         send = AsyncMock()
-        session = Session(None, send, settings=settings)
+        session = Session(send, send_audio, settings=settings)
         session.turn = 1
         session._begin_playback(1)
         with patch('lari.session.time.monotonic', return_value=100), \
@@ -35,7 +39,7 @@ class SettingsInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_custom_minimum_speech_rejects_short_turn_before_stt(self):
         process = get_settings()
         settings = replace(process, min_speech_s=process.min_speech_s + 2)
-        session = Session(None, AsyncMock(), settings=settings)
+        session = Session(AsyncMock(), send_audio, settings=settings)
         session._record_utterance = AsyncMock(return_value=np.ones(
             int((process.min_speech_s + 1) * 16000), dtype=np.int16))
         with patch.object(dispatch, 'open_stream', return_value=(None, False)) as stream, \
@@ -51,7 +55,7 @@ class SettingsInjectionTests(unittest.IsolatedAsyncioTestCase):
         # Below the custom threshold but above the process threshold.
         threshold = max(process.vad_min_rms, 500 * process.vad_noise_mult)
         settings = replace(process, vad_min_rms=threshold + 2000, idle_abort_s=.05)
-        session = Session(None, AsyncMock(), settings=settings)
+        session = Session(AsyncMock(), send_audio, settings=settings)
         self.assertEqual(session.update_noise_floor(threshold + 100), settings.vad_min_rms)
         session.recv_queue.put(np.full(1600, threshold + 100, dtype=np.int16).tobytes())
         session.recv_queue.put(None)
@@ -60,7 +64,7 @@ class SettingsInjectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_worker_uses_injected_echo_mute(self):
         settings = replace(get_settings(), echo_mute_s=10)
-        session = Session(None, AsyncMock(), settings=settings)
+        session = Session(AsyncMock(), send_audio, settings=settings)
         session.last_tts = 95
         session.conversation_until = float('inf')
         with patch.object(runtime.time, 'time', return_value=100), \
@@ -71,8 +75,8 @@ class SettingsInjectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shared_settings_and_private_connection_state(self):
         settings = load_settings({})
-        first = Session(None, AsyncMock(), settings=settings)
-        second = Session(None, AsyncMock(), settings=settings)
+        first = Session(AsyncMock(), send_audio, settings=settings)
+        second = Session(AsyncMock(), send_audio, settings=settings)
         self.assertIs(first._settings, second._settings)
         with self.assertRaises(FrozenInstanceError):
             settings.followup_s = 99
@@ -97,7 +101,7 @@ class SettingsInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_tts_receives_custom_voice_and_limits(self):
         settings = replace(get_settings(), tts_voice='custom-voice', stream_tts_queue_max=2,
                            stream_sentence_max_chars=7, stream_text_max_chars=11)
-        session = Session(None, AsyncMock(), settings=settings)
+        session = Session(AsyncMock(), send_audio, settings=settings)
         reading = session._new_reading(1)
         self.assertEqual(reading.queue.maxsize, 2)
         self.assertEqual(reading.buffer.feed('uno due tre'), ['uno due'])
@@ -124,7 +128,7 @@ class SettingsInjectionTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             settings = replace(settings, usage_ledger=Path(directory)/'turns.json',
                                realtime_usage_file=Path(directory)/'audio.json', realtime_daily_seconds=3)
-            session = Session(None, AsyncMock(), settings=settings)
+            session = Session(AsyncMock(), send_audio, settings=settings)
             self.assertEqual(session.usage_ledger.path, settings.usage_ledger)
             budgets = [realtime.realtime_daily_budget(settings) for _ in range(2)]
             self.assertTrue(budgets[0].reserve(2))

@@ -17,6 +17,10 @@ from lari.stt import dispatch
 from lari.wake.config import build_wake_config
 
 
+async def send_audio(chunk):
+    pass
+
+
 class VoskRoutingTests(unittest.TestCase):
     def setUp(self):
         self.audio = np.zeros(audio_module.SAMPLE_RATE, dtype=np.int16)
@@ -79,7 +83,7 @@ class VoskSessionTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             sent.append(message)
 
-        session = session_module.Session(None, send, settings=get_settings())
+        session = session_module.Session(send, send_audio, settings=get_settings())
         session._record_utterance = AsyncMock(return_value=np.ones(audio_module.SAMPLE_RATE, dtype=np.int16))
         session._speak = AsyncMock()
         session._record_usage = Mock()

@@ -13,6 +13,10 @@ from lari.config import load_settings
 from lari.session import Session
 
 
+async def send_audio(chunk):
+    pass
+
+
 class AgentDispatchTests(unittest.TestCase):
     def setUp(self):
         self.settings = load_settings({})
@@ -55,7 +59,7 @@ class AgentDispatchTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            session = Session(None, AsyncMock(), settings=self.settings)
+            session = Session(AsyncMock(), send_audio, settings=self.settings)
             first = await session._ask_hermes('ciao')
             second = await session._ask_hermes('come stai?')
             return first, second, session.hermes_session_id
@@ -90,7 +94,7 @@ class AgentDispatchTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            sessions = [Session(None, AsyncMock(), settings=self.settings), Session(None, AsyncMock(), settings=self.settings)]
+            sessions = [Session(AsyncMock(), send_audio, settings=self.settings), Session(AsyncMock(), send_audio, settings=self.settings)]
             await asyncio.gather(
                 sessions[0]._ask_hermes('a-first'), sessions[1]._ask_hermes('b-first'))
             await asyncio.gather(
@@ -131,7 +135,7 @@ class AgentDispatchTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            session = Session(None, AsyncMock(), settings=self.settings)
+            session = Session(AsyncMock(), send_audio, settings=self.settings)
             await session._ask_hermes('prima')
             with self.assertRaises(hermes_client.HermesContinuationError) as raised:
                 await session._ask_hermes('seguito')
@@ -411,16 +415,6 @@ class HermesStreamingTests(unittest.TestCase):
         self.assertEqual(calls[0].headers['X-Hermes-Session-Id'], 'prior-id')
 
 
-class _AudioWebSocket:
-    def __init__(self):
-        self.binary = []
-        self.binary_sent = asyncio.Event()
-
-    async def send_bytes(self, data):
-        self.binary.append(data)
-        self.binary_sent.set()
-
-
 class SegmentedPlaybackTests(unittest.TestCase):
     def setUp(self):
         self.settings = load_settings({})
@@ -433,7 +427,10 @@ class SegmentedPlaybackTests(unittest.TestCase):
         self.assertEqual(buffer.flush(), ['lunga qui'])
 
     def test_segmented_audio_order_and_session_id_after_done(self):
-        ws = _AudioWebSocket()
+        binary = []
+
+        async def send_audio(chunk):
+            binary.append(chunk)
         sent = []
 
         async def send_json(value):
@@ -446,7 +443,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
             return hermes_client.HermesReply('Prima frase. Seconda frase.', 'done-id')
 
         async def run():
-            session = Session(ws, send_json, settings=self.settings)
+            session = Session(send_json, send_audio, settings=self.settings)
             with patch.object(session_module, 'stream_hermes', side_effect=fake_stream), \
                  patch.object(tts_module, 'tts', new_callable=AsyncMock, side_effect=[b'one', b'two']):
                 result = await session._stream_hermes_speak('ciao', 4)
@@ -461,10 +458,13 @@ class SegmentedPlaybackTests(unittest.TestCase):
             [('audio_start', None), ('audio_chunk', 0),
              ('audio_chunk', 1), ('audio_end', None)],
         )
-        self.assertEqual(ws.binary, [b'one', b'two'])
+        self.assertEqual(binary, [b'one', b'two'])
 
     def test_tts_failure_does_not_retry_hermes_or_replace_completed_session(self):
-        ws = _AudioWebSocket()
+        binary = []
+
+        async def send_audio(chunk):
+            binary.append(chunk)
         sent = []
 
         async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
@@ -474,7 +474,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def run():
             async def send_json(value):
                 sent.append(value)
-            session = Session(ws, send_json, settings=self.settings)
+            session = Session(send_json, send_audio, settings=self.settings)
             with patch.object(session_module, 'stream_hermes', side_effect=fake_stream) as stream, \
                  patch.object(tts_module, 'tts', new_callable=AsyncMock, side_effect=RuntimeError('provider secret/path')):
                 result = await session._stream_hermes_speak('ciao', 5)
@@ -487,7 +487,10 @@ class SegmentedPlaybackTests(unittest.TestCase):
         self.assertFalse(any(item['type'].startswith('audio_') for item in sent))
 
     def test_stream_error_ends_existing_audio_without_reissuing_turn(self):
-        ws = _AudioWebSocket()
+        binary = []
+
+        async def send_audio(chunk):
+            binary.append(chunk)
         sent = []
         calls = []
 
@@ -499,7 +502,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def run():
             async def send_json(value):
                 sent.append(value)
-            session = Session(ws, send_json, settings=self.settings)
+            session = Session(send_json, send_audio, settings=self.settings)
             with patch.object(session_module, 'stream_hermes', side_effect=fake_stream), \
                  patch.object(tts_module, 'tts', new_callable=AsyncMock, return_value=b'audio'):
                 with self.assertRaises(hermes_client.HermesStreamTurnError) as raised:
@@ -517,7 +520,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(_):
             pass
 
-        session = Session(None, send_json, settings=self.settings)
+        session = Session(send_json, send_audio, settings=self.settings)
         async def run():
             session._begin_playback(9)
             self.assertFalse(session.mark_playback_done(turn=8, status='completed'))
@@ -529,7 +532,12 @@ class SegmentedPlaybackTests(unittest.TestCase):
         self.assertEqual(session.conversation_until, 0.0)
 
     def test_midstream_interrupt_cancels_sse_and_tts_without_retry_or_audio_end(self):
-        ws = _AudioWebSocket()
+        binary = []
+        binary_sent = asyncio.Event()
+
+        async def send_audio(chunk):
+            binary.append(chunk)
+            binary_sent.set()
         sent = []
         stream_cancelled = asyncio.Event()
         stream_calls = []
@@ -547,11 +555,11 @@ class SegmentedPlaybackTests(unittest.TestCase):
                 raise
 
         async def run():
-            session = Session(ws, send_json, settings=self.settings)
+            session = Session(send_json, send_audio, settings=self.settings)
             task = asyncio.create_task(session._stream_hermes_speak('ciao', 7))
             session.active_turn = 7
             session._turn_task = task
-            await asyncio.wait_for(ws.binary_sent.wait(), 1)
+            await asyncio.wait_for(binary_sent.wait(), 1)
             self.assertTrue(await session.interrupt_current_turn(7))
             with self.assertRaises(asyncio.CancelledError):
                 await task
@@ -567,7 +575,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         self.assertEqual(session.playback_status, 'interrupted')
         self.assertFalse(session.awaiting_playback)
         self.assertEqual(session.conversation_until, 0.0)
-        self.assertEqual(ws.binary, [b'audio'])
+        self.assertEqual(binary, [b'audio'])
         self.assertEqual(
             [item['type'] for item in sent],
             ['state', 'audio_start', 'audio_chunk', 'interrupt_ack', 'state'],
@@ -576,7 +584,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
 
     def test_stale_or_wrong_turn_interrupt_is_rejected_without_cancelling_current_turn(self):
         async def run():
-            session = Session(None, AsyncMock(), settings=self.settings)
+            session = Session(AsyncMock(), send_audio, settings=self.settings)
             task = asyncio.create_task(asyncio.Event().wait())
             session.active_turn = 12
             session._turn_task = task
@@ -597,7 +605,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(_):
             pass
 
-        session = Session(None, send_json, settings=self.settings)
+        session = Session(send_json, send_audio, settings=self.settings)
         async def run():
             session._begin_playback(14)
             session._mark_playback_interrupted(14)

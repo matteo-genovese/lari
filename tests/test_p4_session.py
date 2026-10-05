@@ -18,19 +18,49 @@ from lari.stt import realtime as live
 from lari.stt.realtime import RealtimeScribe
 
 
-class Socket:
-    def __init__(self):
-        self.audio = []
-        self.sent = asyncio.Event()
-
-    async def send_bytes(self, data):
-        self.audio.append(data)
-        self.sent.set()
-
-
 class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_binary_audio_callable_preserves_bytes_and_protocol_order(self):
+        events = []
+        chunks = [b"ID3\x00\xff\x01", b"\xff\xfb\x00\x02"]
+
+        async def send_json(data):
+            events.append(("json", data))
+
+        async def send_audio(chunk):
+            events.append(("audio", chunk))
+
+        session = Session(send_json, send_audio, settings=get_settings())
+        session.turn = session.active_turn = 1
+
+        async def stream(text, on_delta, **kwargs):
+            await on_delta("Prima frase. Seconda frase.")
+            return HermesReply("Prima frase. Seconda frase.", "done")
+
+        with patch.object(sessions, "stream_hermes", side_effect=stream), \
+             patch.object(voice, "tts", new_callable=AsyncMock, side_effect=chunks):
+            await session._stream_hermes_speak("comando", 1)
+        self.assertEqual(events, [
+            ("json", {"type": "state", "state": "speaking", "turn": 1}),
+            ("json", {"type": "audio_start", "turn": 1}),
+            ("json", {"type": "audio_chunk", "turn": 1, "seq": 0}),
+            ("audio", chunks[0]),
+            ("json", {"type": "audio_chunk", "turn": 1, "seq": 1}),
+            ("audio", chunks[1]),
+            ("json", {"type": "audio_end", "turn": 1}),
+        ])
+
+        events.clear()
+        with patch.object(voice, "tts", new_callable=AsyncMock, return_value=chunks[0]):
+            await session._speak("Risposta singola.", 1)
+        self.assertEqual(events, [
+            ("json", {"type": "state", "state": "speaking", "turn": 1}),
+            ("json", {"type": "audio", "fmt": "mp3", "bytes": len(chunks[0]), "turn": 1}),
+            ("audio", chunks[0]),
+        ])
+        await session.disconnect()
+
     async def test_stale_ack_leaves_current_turn_and_waiter_untouched(self):
-        session = Session(Socket(), AsyncMock(), settings=get_settings())
+        session = Session(AsyncMock(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 2
         session.state = "speaking"
         session._begin_playback(2)
@@ -46,7 +76,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await session.disconnect()
 
     async def test_interrupt_during_synthesis_cancels_reading_without_resubmission(self):
-        session = Session(Socket(), AsyncMock(), settings=get_settings())
+        session = Session(AsyncMock(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 3
         synthesizing = asyncio.Event()
         finalized = asyncio.Event()
@@ -73,7 +103,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(task.done())
             self.assertTrue(reading.worker.done())
             self.assertTrue(reading.queue.empty())
-            self.assertEqual(session.ws.audio, [])
+            session._send_audio.assert_not_awaited()
             self.assertFalse(await session.playback_completed(3))
             provider.assert_awaited_once()
             followup = session._interrupted_followup_task
@@ -81,7 +111,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(followup.done())
 
     async def test_disconnect_awaits_turn_tts_and_realtime_reader(self):
-        session = Session(Socket(), AsyncMock(), settings=get_settings())
+        session = Session(AsyncMock(), AsyncMock(), settings=get_settings())
         started = asyncio.Event()
         recording = asyncio.Event()
         socket = Mock(close=AsyncMock())
@@ -105,7 +135,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(session.active_turn)
 
         # A different disconnect point: voice synthesis and SSE are both active.
-        session = Session(Socket(), AsyncMock(), settings=get_settings())
+        session = Session(AsyncMock(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 4
 
         async def synth(text, settings):
@@ -130,11 +160,13 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_sessions_keep_audio_turns_ids_and_followups_independent(self):
         messages = [[], []]
-        sockets = [Socket(), Socket()]
+        audio = [[], []]
+        async def send_audio(index, chunk):
+            audio[index].append(chunk)
         async def send(index, message):
             messages[index].append(message)
-        first = Session(sockets[0], lambda message: send(0, message), settings=get_settings())
-        second = Session(sockets[1], lambda message: send(1, message), settings=get_settings())
+        first = Session(lambda message: send(0, message), lambda chunk: send_audio(0, chunk), settings=get_settings())
+        second = Session(lambda message: send(1, message), lambda chunk: send_audio(1, chunk), settings=get_settings())
         first.turn = first.active_turn = 7
         second.turn = second.active_turn = 9
         first.hermes_session_id, second.hermes_session_id = "first", "second"
@@ -162,8 +194,8 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
              patch.object(voice, "tts", side_effect=synth):
             await asyncio.gather(first._stream_hermes_speak("Prima", 7),
                                  second._stream_hermes_speak("Seconda", 9))
-        self.assertEqual(sockets[0].audio, [b"Prima.", b"Uno.", b"Due."])
-        self.assertEqual(sockets[1].audio, [b"Seconda.", b"Uno.", b"Due."])
+        self.assertEqual(audio[0], [b"Prima.", b"Uno.", b"Due."])
+        self.assertEqual(audio[1], [b"Seconda.", b"Uno.", b"Due."])
         self.assertEqual((first.hermes_session_id, second.hermes_session_id),
                          ("first-done", "second-done"))
         self.assertEqual((first.conversation_until, second.conversation_until), (0, 0))
@@ -187,8 +219,8 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             messages[index].append(message)
             if message["type"] == "audio_end":
                 ended[index].set()
-        first = Session(Socket(), lambda message: send(0, message), settings=get_settings())
-        second = Session(Socket(), lambda message: send(1, message), settings=get_settings())
+        first = Session(lambda message: send(0, message), AsyncMock(), settings=get_settings())
+        second = Session(lambda message: send(1, message), AsyncMock(), settings=get_settings())
         first.turn, second.turn = 3, 8
         first.hermes_session_id, second.hermes_session_id = "one", "two"
         first._record_utterance = AsyncMock(return_value=np.ones(16000, dtype=np.int16))
@@ -217,8 +249,8 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             await first.disconnect()
             self.assertTrue(await second.playback_completed(9))
             await asyncio.wait_for(tasks[1], 1)
-        self.assertEqual(first.ws.audio, [b"Prima."])
-        self.assertEqual(second.ws.audio, [b"Seconda."])
+        first._send_audio.assert_awaited_once_with(b"Prima.")
+        second._send_audio.assert_awaited_once_with(b"Seconda.")
         self.assertEqual((first.hermes_session_id, second.hermes_session_id),
                          ("one-done", "two-done"))
         self.assertTrue(all(task.done() for task in tasks))
@@ -226,7 +258,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await second.disconnect()
 
     async def test_old_turn_cannot_publish_text_audio_or_session_id(self):
-        session = Session(Socket(), AsyncMock(), settings=get_settings())
+        session = Session(AsyncMock(), AsyncMock(), settings=get_settings())
         session.turn = session.active_turn = 12
         session.hermes_session_id = "current"
         async def stream(text, on_delta, on_approval, **kwargs):
@@ -241,11 +273,11 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.hermes_session_id, "current")
         session._send_json.assert_not_awaited()
         synth.assert_not_awaited()
-        self.assertEqual(session.ws.audio, [])
+        session._send_audio.assert_not_awaited()
         await session.disconnect()
 
     async def test_disconnect_awaits_wake_work_scheduled_before_it_starts(self):
-        session = Session(Socket(), AsyncMock(), settings=get_settings())
+        session = Session(AsyncMock(), AsyncMock(), settings=get_settings())
         session.conversation_until = time.monotonic() + 30
         session._record_utterance = AsyncMock(side_effect=AssertionError("disconnected"))
         loop = asyncio.get_running_loop()
@@ -264,7 +296,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session._jobs)
 
     async def test_single_response_provider_error_is_safe(self):
-        session = Session(Socket(), AsyncMock(), settings=get_settings())
+        session = Session(AsyncMock(), AsyncMock(), settings=get_settings())
         with patch.object(voice, "tts", side_effect=RuntimeError("secret/path")):
             await session._speak("test", 1)
         error = session._send_json.call_args.args[0]["error"]

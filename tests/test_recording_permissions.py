@@ -12,6 +12,10 @@ from lari import session as session_module
 from lari import server
 
 
+async def send_audio(chunk):
+    pass
+
+
 class RecordingPermissionsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         previous_umask = os.umask(0o022)
@@ -27,7 +31,7 @@ class RecordingPermissionsTests(unittest.IsolatedAsyncioTestCase):
         websocket = Mock()
         websocket.accept = AsyncMock()
         websocket.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
-        session = session_module.Session(websocket, AsyncMock(), settings=get_settings())
+        session = session_module.Session(AsyncMock(), send_audio, settings=get_settings())
         session.recent.extend(self.data)
         with tempfile.TemporaryDirectory() as root, \
              patch.object(audio_module, "BASE_DIR", Path(root)), \
@@ -41,7 +45,7 @@ class RecordingPermissionsTests(unittest.IsolatedAsyncioTestCase):
             self.assert_recording(files[0])
 
     async def test_debug_recording_is_owner_only(self):
-        session = session_module.Session(None, AsyncMock(), settings=get_settings())
+        session = session_module.Session(AsyncMock(), send_audio, settings=get_settings())
         session.recent.extend(self.data)
         with tempfile.TemporaryDirectory() as root, \
              patch.object(server.tempfile, "tempdir", root), \
