@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 
-from lari import stt_backends
+from lari.stt import realtime as stt_backends
 from lari.config import load_settings
 
 

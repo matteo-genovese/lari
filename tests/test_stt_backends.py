@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from lari import stt_backends
+from lari.stt import providers as stt_backends
 from lari.config import load_settings
 
 PCM = np.arange(3200, dtype=np.int16)  # 0.2 s of 16 kHz mono
@@ -128,7 +128,7 @@ class WakeTermDerivationTests(unittest.TestCase):
             "LARI_STT_KEYTERMS": "Aura",
         }
         code = (
-            "import json; from lari import stt_backends; print(json.dumps({"
+            "import json; from lari.stt import providers as stt_backends; print(json.dumps({"
             "'rt': list(stt_backends.REALTIME_KEYTERMS), "
             "'kt': list(stt_backends.KEYTERMS), "
             "'p': stt_backends.STYLE_PROMPT}))"

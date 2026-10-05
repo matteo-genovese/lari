@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 
 from lari import server
-from lari.wake_config import build_wake_config
+from lari.wake.config import build_wake_config
 
 
 class VoskRoutingTests(unittest.TestCase):

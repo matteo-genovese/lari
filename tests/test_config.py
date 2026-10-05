@@ -5,7 +5,8 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 
-from lari import config, stt_backends, usage
+from lari import config, usage
+from lari.stt import providers as stt_backends
 
 
 class SettingsTests(unittest.TestCase):

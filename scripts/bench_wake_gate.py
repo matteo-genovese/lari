@@ -18,7 +18,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lari import server
+from lari.wake.detector import vosk_wake
+from lari.stt.local import transcribe
+from lari.stt.vosk import transcribe_vosk
 from lari.config import load_settings
 
 
@@ -30,8 +32,7 @@ def load(path: Path) -> np.ndarray:
 
 def main(argv: list[str]) -> int:
     cfg = load_settings().wake_config
-    server.WAKE_CONFIG = cfg
-    print(f"phrase={cfg.phrase!r} model={server.STT_MODEL!r}")
+    print(f"phrase={cfg.phrase!r} model={load_settings().stt_model!r}")
     print(f"{'clip':<42} {'dur':>5} {'gateA':>5} {'free/whisper clean':>20} "
           f"{'verdict':>7} {'t_add':>6}")
     saved, candidates, added = 0.0, 0, []
@@ -39,19 +40,19 @@ def main(argv: list[str]) -> int:
         path = Path(arg)
         pcm = load(path)
         duration = len(pcm) / 16000
-        prefix = pcm[: int(2.5 * server.SAMPLE_RATE)]
-        gate = server.vosk_wake(pcm, cfg)
+        prefix = pcm[: int(2.5 * 16000)]
+        gate = vosk_wake(pcm, cfg)
         if not gate:
             print(f"{path.name:<42} {duration:>4.1f}s {'-':>5} {'-':>20} "
                   f"{'A-reject':>7} {'-':>6}")
             continue
         candidates += 1
         t0 = time.monotonic()
-        free = server.transcribe_vosk(prefix)
+        free = transcribe_vosk(prefix)
         free_clean = cfg.confidently_clean(free)
         heard = ""
         if free_clean:
-            heard = server.transcribe(prefix)
+            heard = transcribe(prefix)
         elapsed = time.monotonic() - t0
         added.append(elapsed)
         passed = not (free_clean and cfg.confidently_clean(heard))

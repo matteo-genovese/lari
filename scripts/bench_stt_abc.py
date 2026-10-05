@@ -18,7 +18,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from lari import stt_backends  # noqa: E402
+from lari.stt import providers as stt_backends  # noqa: E402
 
 
 

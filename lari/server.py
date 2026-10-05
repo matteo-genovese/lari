@@ -10,10 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import queue
 import re
-import subprocess
 import sys
 import tempfile
 import threading
@@ -27,32 +25,30 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 
 from . import hermes
-from . import stt_backends
-from . import wake_config
+from .stt import providers as stt_backends  # TEMP-P5
+from .wake import config as wake_config  # TEMP-P5
 from .config import get_settings
+
+
+# TEMP-P5: old test/public names; implementations live in their subsystems.
+from .audio import SessionAudio, save_turn_audio
+from .wake import detector as _detector, confirm as _confirm
+from .stt import local as _local, vosk as _vosk, dispatch as _dispatch
+from . import audio as _audio
+from .wake.detector import (_wake_engine_builder, wake_command, resolve_command,
+                            get_vosk, vosk_wake, resolve_vosk_command, make_engine)
+from .wake.confirm import confirm_candidate
+from .stt.local import get_stt, transcribe
+from .stt.vosk import transcribe_vosk
+from .stt.dispatch import (_transcribe_local_fallback, stt_transcribe,
+                          _transcribe_realtime_or_batch,
+                          transcribe_realtime_or_batch, decode_utterance)
 
 _SETTINGS = get_settings()
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # repo root; runtime paths never depend on cwd
 HERMES_ROOT = _SETTINGS.hermes_root
-sys.path.insert(0, str(HERMES_ROOT))
 
-
-def _wake_engine_builder():
-    """Lazy loader for the optional openwakeword engine from the Hermes source.
-
-    The default wake provider (energy VAD + Vosk) never needs it; importing it
-    lazily keeps the bridge importable without a Hermes checkout (CI, fresh
-    installs).
-    """
-    try:
-        from tools.wake_word import _build_engine  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError(
-            "the openwakeword wake engine needs the Hermes source in "
-            "LARI_HERMES_ROOT"
-        ) from exc
-    return _build_engine
 
 # ─── configuration ──────────────────────────────────────────────────────────
 TOKEN = _SETTINGS.token
@@ -77,6 +73,7 @@ HermesContinuationError = hermes.HermesContinuationError  # TEMP-P5: alias del r
 
 
 TTS_VOICE = _SETTINGS.tts_voice
+# TEMP-P5: STT configuration re-exports used by existing callers/tests.
 STT_MODEL = _SETTINGS.stt_model
 STT_BACKEND = _SETTINGS.stt_backend
 VOSK_MODEL_DIR = _SETTINGS.vosk_model_dir
@@ -94,25 +91,12 @@ WAKE_PROVIDER = _SETTINGS.wake_provider
 # whisper: any speech starts the recording, then the phrase is searched in the text.
 # sherpa/openwakeword: dedicated hotword engine (English; misses the IT pronunciation).
 # The wake phrase is one setting: command regex, Vosk grammar, junk cleanup and
-# ASR keyterms all derive from it in wake_config.py.  The regex anchors the
+# ASR keyterms all derive from it in wake/config.py.  The regex anchors the
 # wake as an address (transcript start or after a sentence boundary) so
 # background mentions ("ho parlato con ...") never trigger.
 WAKE_CONFIG = _SETTINGS.wake_config
 WAKE_RE = WAKE_CONFIG.command_re
 
-def wake_command(text: str, cfg: wake_config.WakeConfig | None = None) -> str | None:
-    """Return the request after the wake; None when not addressed to us."""
-    return (cfg or WAKE_CONFIG).command(text)
-
-def resolve_command(text: str, conversation_until: float, now: float,
-                    cfg: wake_config.WakeConfig | None = None) -> str | None:
-    """Wake on the first turn, then free dialog only inside the follow-up window."""
-    command = wake_command(text, cfg)
-    if command is not None:
-        return command
-    if now < conversation_until and text.strip():
-        return text.strip()
-    return None
 
 WAKE_PHRASE = WAKE_CONFIG.phrase
 # Second local gate on the wake candidate, before any provider connection.
@@ -138,6 +122,7 @@ STREAM_TTS_QUEUE_MAX = _SETTINGS.stream_tts_queue_max
 STREAM_TEXT_MAX_CHARS = _SETTINGS.stream_text_max_chars
 STREAM_SENTENCE_MAX_CHARS = _SETTINGS.stream_sentence_max_chars
 
+# TEMP-P5: audio configuration re-exports used by existing callers/tests.
 # VAD: adaptive threshold. Minimum base threshold + multiple of the noise floor.
 VAD_MIN_RMS = _SETTINGS.vad_min_rms
 VAD_NOISE_MULT = _SETTINGS.vad_noise_mult
@@ -158,233 +143,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[logging.StreamHandler(), logging.FileHandler(BASE_DIR / "server.log")],
 )
-
-_stt: dict = {}
-_stt_lock = threading.Lock()
-
-
-def get_stt(model: str | None = None):
-    """Lazy singleton for faster-whisper (the base model weighs ~150 MB; load it once)."""
-    with _stt_lock:
-        name = model or STT_MODEL
-        if name not in _stt:
-            from faster_whisper import WhisperModel
-            log.info("caricamento STT model=%s", name)
-            _stt[name] = WhisperModel(name, device="cpu", compute_type="int8")
-        return _stt[name]
-
-
-def transcribe(pcm: np.ndarray, model: str | None = None) -> str:
-    """pcm: int16 16 kHz mono -> text."""
-    audio = pcm.astype(np.float32) / 32768.0
-    # FIXED language: auto-detection on short noisy clips goes haywire
-    # (it once returned Japanese). Empty ("") = auto.
-    lang = STT_LANG or None
-    segments, info = get_stt(model).transcribe(
-        audio,
-        language=lang,
-        beam_size=1,                        # beam5 measured slower on low-power CPUs
-        vad_filter=True,
-        vad_parameters={"threshold": 0.6,   # trims noise fragments harder
-                        "min_silence_duration_ms": 400},
-        hallucination_silence_threshold=2.0,  # trims hallucinated sentences at the tail
-        condition_on_previous_text=False,   # otherwise the model feeds itself repetitions
-        # SHORT prompt: a long prompt gets repeated by the ASR instead of the audio
-        # (hallucination), especially on noisy recordings
-        initial_prompt=WAKE_CONFIG.prompt,
-    )
-    text = " ".join(s.text for s in segments).strip()
-    log.info("STT lang=%s prob=%.2f -> %r", info.language, info.language_probability, text)
-    # Anti-hallucination guard: on near-silence or noise Whisper invents short,
-    # recurring sentences ("I'm sorry.", words in other languages...). If there
-    # is not even one real word, the text is discarded instead of sent to the agent.
-    words = [w for w in re.findall(r"[A-Za-zÀ-ÿ']{3,}", text)]
-    black = {"im sorry", "i'm sorry", "sorry", "thanks for watching", "subscrib", "musica"}
-    low = text.lower().strip(" .!?")
-    if len(words) < 1 or low in black:
-        log.info("STT scartato come fantasma: %r", text[:60])
-        return ""
-    return text
-
-
-_vosk_model = None
-_vosk_lock = threading.Lock()
-
-def get_vosk():
-    """Load the small Italian model once; one recognizer per call."""
-    global _vosk_model
-    with _vosk_lock:
-        if _vosk_model is None:
-            from vosk import Model, SetLogLevel
-            SetLogLevel(-1)
-            _vosk_model = Model(str(VOSK_MODEL_DIR))
-        return _vosk_model
-
-def vosk_wake(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> bool:
-    """Detect the wake in the first 2.5 s without forcing the rest through the grammar."""
-    from vosk import KaldiRecognizer
-    cfg = cfg or WAKE_CONFIG
-    rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE, json.dumps(list(cfg.grammar)))
-    rec.AcceptWaveform(pcm[:int(2.5 * SAMPLE_RATE)].astype(np.int16, copy=False).tobytes())
-    heard = json.loads(rec.FinalResult()).get("text", "")
-    log.info("Vosk wake: %r", heard)
-    return bool(cfg.loose_re.search(heard))
-
-def transcribe_vosk(pcm: np.ndarray) -> str:
-    """Local CPU Italian transcription, fed in utterance-sized blocks."""
-    from vosk import KaldiRecognizer
-    rec = KaldiRecognizer(get_vosk(), SAMPLE_RATE)
-    words = []
-    raw = pcm.astype(np.int16, copy=False).tobytes()
-    for i in range(0, len(raw), 8000):
-        if rec.AcceptWaveform(raw[i:i + 8000]):
-            words.append(json.loads(rec.Result()).get("text", ""))
-    words.append(json.loads(rec.FinalResult()).get("text", ""))
-    text = " ".join(filter(None, words)).strip()
-    log.info("Vosk STT -> %r", text)
-    return text
-
-def resolve_vosk_command(text: str, wake: bool, followup: bool,
-                         cfg: wake_config.WakeConfig | None = None) -> str | None:
-    if not wake and not followup:
-        return None
-    cfg = cfg or WAKE_CONFIG
-    if wake:
-        command = wake_command(text, cfg)
-        if command is not None:
-            return command
-        # Free-form ASR sometimes renders the wake as one spurious word; the
-        # separate grammar already confirmed it, so strip up to two junk words.
-        text = cfg.strip_junk(text)
-    return text.strip()
-
-def confirm_candidate(pcm: np.ndarray, cfg: wake_config.WakeConfig | None = None) -> bool:
-    """Second local gate on the 2.5 s candidate only, before Realtime opens.
-
-    Returns True (pass) unless both local recognizers confidently transcribe
-    clear non-wake speech.  A false negative costs more than the credits it
-    saves, so every doubt passes.  The slow model runs only when the fast
-    Vosk transcription is already clean, keeping true positives cheap.
-    """
-    cfg = cfg or WAKE_CONFIG
-    prefix = pcm[:int(2.5 * SAMPLE_RATE)]
-    t0 = time.monotonic()
-    try:
-        free = transcribe_vosk(prefix)
-    except Exception:
-        log.exception("second gate: Vosk libero non disponibile")
-        free = ""
-    if not cfg.confidently_clean(free):
-        log.info("second gate %.2fs: dubbio su %r -> pass",
-                 time.monotonic() - t0, free[:60])
-        return True
-    try:
-        heard = transcribe(prefix)
-    except Exception:
-        log.exception("second gate: faster-whisper non disponibile")
-        return True
-    passed = not cfg.confidently_clean(heard)
-    log.info("second gate %.2fs: free=%r whisper=%r -> %s",
-             time.monotonic() - t0, free[:60], heard[:60],
-             "pass" if passed else "veto")
-    return passed
-
-def _transcribe_local_fallback(pcm: np.ndarray) -> str:
-    """Transcribe realtime failures without making a paid provider request."""
-    try:
-        return transcribe_vosk(pcm)
-    except Exception:
-        log.exception("Vosk locale non disponibile; uso faster-whisper locale")
-        return transcribe(pcm)
-
-
-def stt_transcribe(pcm: np.ndarray) -> str:
-    """Raw text from the configured STT backend: cloud (groq/elevenlabs/openai)
-    or local Whisper. A single dispatch point: _on_wake no longer has to pick
-    by hand (it used to send everything but vosk to local Whisper)."""
-    if STT_BACKEND == stt_backends.REALTIME_BACKEND:
-        # Realtime callers must never silently turn a provider failure into a
-        # paid batch request.  The live path is opened only after local wake
-        # confirmation; direct callers retain the same local fallback.
-        return _transcribe_local_fallback(pcm)
-    if STT_BACKEND in stt_backends.BACKENDS:
-        return stt_backends.transcribe(pcm, STT_BACKEND)
-    return transcribe(pcm)
-
-
-async def _transcribe_realtime_or_batch(pcm: np.ndarray, realtime, turn: int,
-                                        start_failed: bool = False) -> tuple[str, bool]:
-    """Return ``(transcript, used_batch)`` without a paid fallback.
-
-    The second tuple value is retained for compatibility with older callers;
-    it is always false now.  Realtime failure/cap/provider errors fall back to
-    the local Vosk recognizer (then local faster-whisper), never Scribe batch.
-    """
-    try:
-        if start_failed or realtime is None:
-            raise stt_backends.RealtimeUnavailable("realtime unavailable")
-        return await realtime.finish(), False
-    except stt_backends.RealtimeUnavailable:
-        log.warning(
-            "turno %d: ElevenLabs realtime STT non disponibile; fallback STT locale",
-            turn,
-        )
-        return await asyncio.to_thread(_transcribe_local_fallback, pcm), False
-
-
-async def transcribe_realtime_or_batch(pcm: np.ndarray, realtime, turn: int,
-                                       start_failed: bool = False) -> str:
-    """Return one transcript: committed realtime text or local fallback."""
-    text, _used_batch = await _transcribe_realtime_or_batch(
-        pcm, realtime, turn, start_failed=start_failed
-    )
-    return text
-
-
-def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None) -> str | None:
-    """Transcribe and filter the wake; None = speech not addressed to the bridge."""
-    backend = backend or STT_BACKEND
-    if backend == "vosk":
-        # The grammar only looks at the start: it does not distort free transcription.
-        wake = False if followup else vosk_wake(pcm)
-        if not wake and not followup:
-            return None
-        text = transcribe_vosk(pcm)
-        return resolve_vosk_command(text, wake, followup) if text else None
-    if backend in stt_backends.BACKENDS:
-        # Cloud (A/B/C): same rules as whisper — the wake is regexed against the
-        # text, the follow-up window is evaluated at the start of the turn.
-        text = stt_backends.transcribe(pcm, backend)
-        return resolve_command(text, float("inf") if followup else 0.0,
-                               time.monotonic()) if text else None
-    if backend == stt_backends.REALTIME_BACKEND:
-        # Realtime is a streaming transport, not a reason to use ElevenLabs
-        # batch when called synchronously.
-        text = _transcribe_local_fallback(pcm)
-        return resolve_vosk_command(text, wake=not followup, followup=followup) if text else None
-    if backend == "whisper":
-        text = transcribe(pcm)
-        return resolve_command(text, float("inf") if followup else 0.0, time.monotonic()) if text else None
-    raise ValueError(f"STT backend non supportato: {backend}")
-
-def save_turn_audio(pcm: np.ndarray, directory: Path | None = None,
-                    name: str | None = None, keep: int = 5) -> Path:
-    """Keep a few turn WAVs for reproducible diagnostics (local only)."""
-    import wave
-    directory = directory or BASE_DIR / "calibration" / "turns"
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if name is None:
-        name = f"turn_{time.time_ns()}.wav"
-    path = directory / name
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as output, wave.open(output, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(SAMPLE_RATE)
-        wav.writeframes(pcm.astype(np.int16, copy=False).tobytes())
-    for old in sorted(directory.glob("turn_*.wav"))[:-keep]:
-        old.unlink()
-    return path
 
 
 def tts(text: str) -> bytes:
@@ -503,19 +261,9 @@ def _ask_cli(text: str) -> str:
 
 
 # ─── wake engine ─────────────────────────────────────────────────────────────
-def make_engine():
-    cfg = {
-        "provider": WAKE_PROVIDER,
-        "phrase": WAKE_PHRASE,
-        "sensitivity": WAKE_SENSITIVITY,
-        "confirmation_frames": CONFIRM_FRAMES,
-        "profile_routing": False,   # only the bridge's phrase: no Hermes profile routing
-        "openwakeword": {"model": "hey_hermes"},
-    }
-    return _wake_engine_builder()(cfg)
 
 
-class Session:
+class Session(SessionAudio):
     """State of one satellite connection (one device = one session)."""
 
     def __init__(self, ws: WebSocket, send_json):
@@ -523,17 +271,13 @@ class Session:
         self.send_json = send_json
         self.engine = None
         self.state = "listening"           # the worker starts listening immediately
-        self.frames = bytearray()          # frame-alignment residue
         self.last_wake = 0.0
-        self.noise_floor = 500.0           # EMA of the noise floor
-        self.last_silent = time.time()     # last truly silent frame
+        self._init_audio()
         self.recv_queue: queue.Queue = queue.Queue(maxsize=400)
         self.stop = threading.Event()
         self.turn = 0
         # rotating calibration buffer: the last ~12 s of microphone, to see
         # what the detector really hears when it does not fire
-        self.recent = bytearray()
-        self.recent_lock = threading.Lock()
         self.last_tts = 0.0
         self.conversation_until = 0.0
         self.awaiting_playback = False
@@ -817,29 +561,7 @@ class Session:
         await self.send_json({"type": "state", "state": state, **extra})
 
     # —— wake: runs in a dedicated thread; the event loop must never block ——
-    def _remember_audio(self, chunk: bytes) -> None:
-        with self.recent_lock:
-            self.recent += chunk
-            limit = 12 * SAMPLE_RATE * 2
-            if len(self.recent) > limit:
-                del self.recent[: len(self.recent) - limit]
 
-    def _candidate_from_queue(self, prelude: bytes, wait_for_gate: bool) -> bytes:
-        """Return a contiguous candidate, bounded before any cloud STT call."""
-        candidate = bytearray(prelude)
-        if not wait_for_gate:
-            return bytes(candidate)
-        target = int(2.5 * SAMPLE_RATE * 2)
-        while len(candidate) < target and not self.stop.is_set():
-            try:
-                chunk = self.recv_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if chunk is None:
-                break
-            self._remember_audio(chunk)
-            candidate += chunk
-        return bytes(candidate[:target])
 
     def _launch_local_candidate(self, candidate: bytes) -> bool:
         """Apply local wake/follow-up policy and schedule exactly one turn."""
@@ -856,7 +578,7 @@ class Session:
                 log.info("candidato scartato dal secondo gate locale")
                 self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
                 return False
-        if time.time() - self.last_tts < ECHO_MUTE_S:
+        if self.echo_muted(time.time(), ECHO_MUTE_S):
             return False
         self.last_wake = time.time()
         self.state = "waking"
@@ -921,12 +643,7 @@ class Session:
                 arr = np.frombuffer(frame, dtype=np.int16)
                 rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
                 stat_peak = max(stat_peak, rms)
-                thr = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
-                if rms < thr:
-                    self.noise_floor = 0.98 * self.noise_floor + 0.02 * max(rms, 1.0)
-                    self.last_silent = time.time()
-                elif time.time() - self.last_silent > 3.0:
-                    self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
+                thr = self.update_noise_floor(rms)
                 if WAKE_PROVIDER == "whisper":
                     speech_streak = speech_streak + 1 if rms >= thr else 0
                     need = 3 if self.noise_floor < 2000 else 8
@@ -938,11 +655,10 @@ class Session:
                         log.exception("errore engine")
                         hit = False
                 now = time.time()
-                if hit and now - self.last_tts < ECHO_MUTE_S:
+                if hit and self.echo_muted(now, ECHO_MUTE_S):
                     continue
                 if hit and now - self.last_wake >= COOLDOWN_S and rms > 200:
-                    with self.recent_lock:
-                        prelude = bytes(self.recent[-int(1.5 * SAMPLE_RATE * 2):])
+                    prelude = self.pre_roll()
                     followup = time.monotonic() < self.conversation_until and not self.awaiting_playback
                     candidate = self._candidate_from_queue(prelude, wait_for_gate=not followup)
                     if self._launch_local_candidate(candidate) or followup:
@@ -979,24 +695,16 @@ class Session:
         # so restart from the last 1.5 s already held in the rotating buffer
         prelude = bytes(initial_pcm)
         if not prelude and WAKE_PROVIDER == "whisper":
-            with self.recent_lock:
-                prelude = bytes(self.recent[-int(1.5 * SAMPLE_RATE * 2):])
+            prelude = self.pre_roll()
         # pause only if a reply was just played (TTS echo)
-        if time.time() - self.last_tts < 3.0:
+        if self.echo_muted(time.time(), 3.0):
             await asyncio.sleep(0.25)
         await self.set_state("recording", turn=turn, followup=followup_at_start)
-        realtime = None
-        realtime_start_failed = False
-        if STT_BACKEND == stt_backends.REALTIME_BACKEND:
-            try:
-                realtime = await stt_backends.RealtimeScribe.connect(
-                    on_partial=lambda text: self._send_partial(text, turn),
-                )
-            except Exception:
-                # _transcribe_realtime_or_batch falls back locally; this flag
-                # avoids pretending that a provider connection existed.
-                realtime_start_failed = True
-                await self.send_json({"type": "stt_status", "mode": "local", "turn": turn})
+        realtime, realtime_start_failed = await _dispatch.open_stream(
+            on_partial=lambda text: self._send_partial(text, turn),
+        )
+        if realtime_start_failed:
+            await self.send_json({"type": "stt_status", "mode": "local", "turn": turn})
         try:
             pcm = await self._record_utterance(prelude, realtime=realtime)
         except Exception:
@@ -1019,45 +727,22 @@ class Session:
         except Exception:
             log.exception("impossibile salvare il WAV diagnostico")
         await self.set_state("transcribing", turn=turn)
-        realtime_result_used_batch = False
         try:
-            if STT_BACKEND == stt_backends.REALTIME_BACKEND:
-                text, realtime_result_used_batch = await _transcribe_realtime_or_batch(
-                    pcm, realtime, turn, start_failed=realtime_start_failed
-                )
-            elif STT_BACKEND == "vosk":
-                text = await asyncio.to_thread(decode_utterance, pcm, followup_at_start)
-            else:
-                text = await asyncio.to_thread(stt_transcribe, pcm)
+            text = await _dispatch.transcribe_turn(
+                pcm, realtime, turn, followup_at_start,
+                start_failed=realtime_start_failed,
+            )
         except Exception as exc:
             log.exception("STT fallito")
             await self._clear_partial(turn)
             await self.set_state("listening", error=f"stt: {exc}")
             return
-        if text is None or (STT_BACKEND != "vosk" and not text):
+        if text is None:
             await self._clear_partial(turn)
             await self.set_state("listening")
             return
         if WAKE_PROVIDER == "whisper":
-            if STT_BACKEND == "vosk":
-                cmd = text
-            elif STT_BACKEND == stt_backends.REALTIME_BACKEND:
-                if followup_at_start:
-                    cmd = text.strip()
-                elif local_wake_confirmed:
-                    # The trusted local grammar is the gate. Realtime may
-                    # omit or garble the wake token, so do not ask a paid
-                    # provider to verify it a second time.
-                    cmd = resolve_vosk_command(text, wake=True, followup=False)
-                else:
-                    # Kept for direct/unit callers that invoke _on_wake()
-                    # without the production candidate path.
-                    cmd = resolve_command(text, 0.0, time.monotonic())
-            else:
-                cmd = resolve_command(
-                    text, float("inf") if followup_at_start else 0.0,
-                    time.monotonic()
-                )
+            cmd = _dispatch.command_for_turn(text, followup_at_start, local_wake_confirmed)
             if cmd is None:
                 log.info("turno %d scartato (fuori dalla conversazione): %r", turn, text[:80])
                 self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
@@ -1159,131 +844,6 @@ class Session:
             log.exception("impossibile registrare l'usage")
         finally:
             self._turn_paid_s = 0.0
-
-    async def _record_utterance(self, prelude: bytes = b"", realtime=None):
-        """VAD: collect PCM while speech lasts, then close after SILENCE_END_S of silence.
-
-        Timing is computed on received samples (not the wall clock), so the
-        behavior stays identical with the live stream and in tests.
-        `prelude` is the audio that precedes the trigger (it keeps the wake
-        phrase, spoken before the system reacts, from being lost).
-        """
-        collected = bytearray(prelude)
-        voiced_s = 0.0
-        idle_s = 0.0
-        started = False
-        last_data = time.time()
-        t_end_max = time.time() + MAX_UTTERANCE_S
-        reported_stt_mode = None
-
-        async def forward_audio(chunk: bytes):
-            nonlocal reported_stt_mode
-            assert realtime is not None
-            sent = await realtime.send_audio(chunk)
-            if sent:
-                self._turn_paid_s = getattr(self, "_turn_paid_s", 0.0) + len(chunk) / (SAMPLE_RATE * 2)
-            mode = "realtime" if sent else "local"
-            if mode != reported_stt_mode:
-                reported_stt_mode = mode
-                await self.send_json({"type": "stt_status", "mode": mode, "turn": self.turn})
-
-        if realtime is not None and prelude:
-            # The local wake detector fired before recording began. Sending this
-            # confirmed pre-roll after opening the provider preserves the wake
-            # gate without ever keeping an idle provider connection alive.
-            await forward_audio(prelude)
-        if prelude:
-            # A candidate is already buffered before the recorder starts. Feed
-            # it through the same local VAD accounting so a quiet gap at the
-            # queue boundary cannot discard the first spoken words.
-            seed = np.frombuffer(prelude, dtype=np.int16)
-            seed_threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
-            for offset in range(0, len(seed), 1600):
-                frame = seed[offset:offset + 1600]
-                if len(frame) == 0:
-                    continue
-                dt = len(frame) / SAMPLE_RATE
-                rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-                if rms >= seed_threshold:
-                    started = True
-                    voiced_s += dt
-                    idle_s = 0.0
-                elif started:
-                    idle_s += dt
-        while time.time() < t_end_max:
-            try:
-                chunk = await asyncio.to_thread(self.recv_queue.get, True, 0.2)
-            except queue.Empty:
-                # stream interrupted (client stalled): close instead of hanging
-                if time.time() - last_data > 3.0:
-                    break
-                continue
-            if chunk is None or len(chunk) < 2:
-                break
-            last_data = time.time()
-            collected += chunk
-            arr = np.frombuffer(chunk, dtype=np.int16)
-            dt = len(arr) / SAMPLE_RATE
-            if realtime is not None:
-                # Realtime STT needs one contiguous stream.  Local VAD still
-                # decides when the turn ends, but must not punch quiet holes in
-                # the audio sent to the provider.
-                await forward_audio(chunk)
-            rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
-            threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
-            # The floor adapts ONLY before the first speech: during an
-            # utterance the quietest syllables would be learned as ambient noise,
-            # the threshold would rise above the speaker's own peaks and the
-            # recorder would hang (real failure: 22 s collected, sentence
-            # spoken twice in the transcript).
-            if not started:
-                if rms < threshold:
-                    self.noise_floor = 0.98 * self.noise_floor + 0.02 * max(rms, 1.0)
-                    self.last_silent = time.time()
-                elif time.time() - self.last_silent > 3.0:
-                    self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
-                    self.last_silent = time.time()
-                    threshold = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT)
-                    log.info("VAD: floor adattato al rumore ambiente -> soglia %.0f", threshold)
-            if rms >= threshold:
-                if not started:
-                    log.info("VAD: parlato rilevato (rms=%.0f soglia=%.0f)", rms, threshold)
-                started = True
-                idle_s = 0.0
-                voiced_s += dt
-            elif started:
-                idle_s += dt
-                # Close anyway after double the expected silence: the wake or the
-                # follow-up already confirmed spoken intent; the voiced quorum
-                # must never be able to hang the recorder.
-                if idle_s >= SILENCE_END_S and (
-                        voiced_s >= MIN_SPEECH_S or idle_s >= SILENCE_END_S + 2.0):
-                    break
-            else:
-                idle_s += dt
-                if idle_s >= IDLE_ABORT_S:
-                    log.info("VAD: abort, nessun parlato entro %.1fs", IDLE_ABORT_S)
-                    return None
-            if idle_s >= SILENCE_END_S and (
-                    voiced_s >= MIN_SPEECH_S or idle_s >= SILENCE_END_S + 2.0):
-                break
-        pcm = np.frombuffer(bytes(collected), dtype=np.int16)
-        log.info("VAD: raccolti %.2fs (parlato %.2fs, started=%s)", len(pcm) / SAMPLE_RATE, voiced_s, started)
-        # Never trim the head: the pre-roll contains the wake, often quieter
-        # than the command. The previous energy trim removed the wake phrase,
-        # leaving only "what's the weather tomorrow...", which the regex then
-        # rejected. Whisper already has its own VAD for leading silence.
-        start = 0
-        thr = max(VAD_MIN_RMS, self.noise_floor * VAD_NOISE_MULT) * 0.5
-        win = 1600
-        end = len(pcm)
-        for i in range(len(pcm) - win, start, -win):
-            if float(np.sqrt(np.mean(pcm[i:i + win].astype(np.float32) ** 2))) >= thr:
-                end = min(len(pcm), i + 2 * win)
-                break
-        log.info("VAD: utterance tagliata %.2fs -> %.2fs",
-                 len(pcm) / SAMPLE_RATE, (end - start) / SAMPLE_RATE)
-        return pcm[start:end]
 
 
 app = FastAPI(title="Lari")
@@ -1456,21 +1016,7 @@ async def ws_endpoint(token: str, websocket: WebSocket):
         # calibration: save the last ~12 s of microphone so it can be
         # re-analyzed offline after each user test
         try:
-            with session.recent_lock:
-                data = bytes(session.recent)
-            if len(data) >= 2 * SAMPLE_RATE * 2:
-                calib = BASE_DIR / "calibration"
-                calib.mkdir(exist_ok=True)
-                import wave as _wave
-                dest = calib / f"mic_{time.strftime('%Y%m%d_%H%M%S')}.wav"
-                dest.unlink(missing_ok=True)
-                fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "wb") as output, _wave.open(output, "wb") as w:
-                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
-                    w.writeframes(data)
-                for old in sorted(calib.glob("mic_*.wav"))[:-8]:
-                    old.unlink()
-                log.info("calibrazione salvata: %s (%.1fs)", dest.name, len(data) / 2 / SAMPLE_RATE)
+            session.save_calibration()
         except Exception:
             log.exception("salvataggio calibrazione fallito")
         log.info("sessione chiusa (turni: %d, ultimo stato: %s)", session.turn, session.state)
@@ -1499,6 +1045,55 @@ async def _startup():
     _loop = asyncio.get_running_loop()
     if not TOKEN:
         log.warning("LARI_TOKEN non imposto: il server rifiuta tutto")
+
+
+# TEMP-P5: forward legacy monkeypatches to the owning modules. No subsystem
+# imports server; remove this compatibility bridge with the old re-exports.
+import types as _types
+class _CompatibilityModule(_types.ModuleType):
+    def __setattr__(self, name, value):
+        for module in (_detector, _confirm, _local, _vosk, _dispatch, _audio):
+            if name in _COMPAT_NAMES and hasattr(module, name):
+                setattr(module, name, value)
+        super().__setattr__(name, value)
+
+_COMPAT_NAMES = {
+    'BASE_DIR',
+    'CONFIRM_FRAMES',
+    'IDLE_ABORT_S',
+    'MAX_UTTERANCE_S',
+    'MIN_SPEECH_S',
+    'SILENCE_END_S',
+    'STT_BACKEND',
+    'STT_LANG',
+    'STT_MODEL',
+    'VAD_MIN_RMS',
+    'VAD_NOISE_MULT',
+    'VOSK_MODEL_DIR',
+    'WAKE_CONFIG',
+    'WAKE_PHRASE',
+    'WAKE_PROVIDER',
+    'WAKE_SENSITIVITY',
+    '_transcribe_local_fallback',
+    '_transcribe_realtime_or_batch',
+    '_wake_engine_builder',
+    'confirm_candidate',
+    'decode_utterance',
+    'get_stt',
+    'get_vosk',
+    'make_engine',
+    'resolve_command',
+    'resolve_vosk_command',
+    'save_turn_audio',
+    'stt_transcribe',
+    'transcribe',
+    'transcribe_realtime_or_batch',
+    'transcribe_vosk',
+    'vosk_wake',
+    'wake_command',
+}
+
+sys.modules[__name__].__class__ = _CompatibilityModule
 
 
 if __name__ == "__main__":

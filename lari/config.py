@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 
-from .wake_config import WakeConfig, build_wake_config, default_phrase
+from .wake.config import WakeConfig, build_wake_config, default_phrase
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 

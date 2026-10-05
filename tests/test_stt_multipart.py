@@ -11,7 +11,7 @@ from unittest.mock import patch
 import httpx
 import numpy as np
 
-from lari import stt_backends
+from lari.stt import providers as stt_backends
 from lari.config import load_settings
 
 PCM = np.arange(3200, dtype=np.int16)
