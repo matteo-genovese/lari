@@ -1,6 +1,7 @@
 """Subsystem boundaries and calibration naming regressions."""
 import ast
 import hashlib
+import json
 import stat
 import subprocess
 import sys
@@ -40,25 +41,27 @@ assert "lari.server" not in sys.modules
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_wake_functions_keep_reference_ast(self):
-        reference = subprocess.check_output(
-            ["git", "show", "bb8f23e:lari/server.py"], cwd=ROOT, text=True)
-        original = {node.name: node for node in ast.parse(reference).body
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        # Frozen reference: update only after reviewing intentional wake changes.
+        reference = json.loads(
+            (ROOT / "tests/fixtures/wake_reference_ast.json").read_text(encoding="utf-8"))
         moved = {
             "lari/wake/detector.py": ("_wake_engine_builder", "wake_command", "resolve_command",
                                       "get_vosk", "vosk_wake", "resolve_vosk_command", "make_engine"),
             "lari/wake/confirm.py": ("confirm_candidate",),
             "lari/stt/vosk.py": ("transcribe_vosk",),
         }
+        self.assertEqual(set(reference["functions"]), set(moved))
         for file, names in moved.items():
-            current = {node.name: node for node in ast.parse((ROOT / file).read_text()).body
+            self.assertEqual(set(reference["functions"][file]), set(names))
+            current = {node.name: node for node in ast.parse((ROOT / file).read_text(encoding="utf-8")).body
                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
             for name in names:
                 with self.subTest(function=name):
-                    self.assertEqual(ast.dump(original[name]), ast.dump(current[name]))
-        # Exact P2 bytes, independent of subsequent commits deleting the old path.
+                    self.assertEqual(reference["functions"][file][name],
+                                     ast.dump(current[name], include_attributes=False))
+        # Freeze configuration bytes as well as function logic.
         self.assertEqual(hashlib.sha256((ROOT / "lari/wake/config.py").read_bytes()).hexdigest(),
-                         "b3393437889f1f2118a1234d124d17ca01e10bb3f53ac44cd420f4f55e96bb07")
+                         reference["sha256"]["lari/wake/config.py"])
 
 
 class STTBoundaryTests(unittest.IsolatedAsyncioTestCase):
