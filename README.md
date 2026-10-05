@@ -37,6 +37,12 @@ components exist because Lari is the voice layer; configured cloud speech
 providers serve that same role. A future client can use the same WebSocket
 protocol. The browser/PWA remains the reference satellite.
 
+`server.py` is the transport adapter and the composition root: it owns the
+FastAPI/WebSocket surface and loads the settings once, then passes them
+explicitly to the runtime components. The session object owns the per-satellite
+state and orchestration and is transport-agnostic, so another client could drive
+the same voice pipeline without changing it.
+
 The browser displays **idle, listening, thinking, speaking and error** using individually derived animated SVG assets; `scripts/derive_mascot_states.py` rebuilds them from the editable animated source `static/assets/lare-concept.svg` (which doubles as the state-cycle demo at `/<token>/assets/lare-concept.svg`). Each asset carries only its own state's motion. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge does not open a provider connection until the local wake gate confirms the utterance.
 
 ## WebSocket protocol
@@ -81,7 +87,7 @@ constructed in `lari/protocol.py` with named parameters.
 
 ## Quick start
 
-Requirements: Python 3.11/3.12, Hermes with the API server enabled, the Hermes source tree (only for the optional openWakeWord engine), a separately downloaded Italian Vosk model, and HTTPS for mobile microphone access (localhost is exempt).
+Requirements: Python 3.11/3.12, Hermes with the API server enabled, a separately downloaded Italian Vosk model, and HTTPS for mobile microphone access (localhost is exempt). A Hermes source/install tree is needed only by the optional features that use it: the Hermes/openWakeWord wake engine and the Hermes CLI fallback taken when the API cannot be reached. Normal operation goes through `LARI_HERMES_API`.
 
 Run `./setup.sh` to automate everything below (virtualenv, dependencies, Italian Vosk model, a generated `LARI_TOKEN` in `.env`), or do it by hand:
 
@@ -96,7 +102,7 @@ cp .env.example .env
 
 - Download an Italian Vosk model; place its extracted folder at `models/vosk-model-small-it-0.22/` or set `LARI_VOSK_MODEL_DIR` to its absolute path. Verify `am/final.mdl` exists inside. Downloaded models are ignored by Git.
 - Generate a unique URL token with `python -c 'import secrets; print(secrets.token_urlsafe(32))'` and put it in `LARI_TOKEN` in `.env`. Never commit that file or disclose the token.
-- Configure `LARI_HERMES_API` and `LARI_HERMES_KEY` as required by your Hermes installation; `LARI_HERMES_ROOT` can point to a nonstandard source checkout.
+- Configure `LARI_HERMES_API` and `LARI_HERMES_KEY` as required by your Hermes installation — this is the normal path. Set `LARI_HERMES_ROOT` only for the optional features that need a Hermes source/install tree (the openWakeWord wake engine and the CLI fallback), or to point at a nonstandard checkout.
 - The example selects local Whisper STT. To use ElevenLabs Scribe Realtime instead, set `LARI_STT_BACKEND=elevenlabs_realtime` and supply `ELEVENLABS_API_KEY` in your **private** environment. Realtime is a paid service; do not enable it by copying an example inadvertently.
 
 Run the bridge after loading your private environment:
@@ -117,7 +123,7 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 - `LARI_TOKEN`: required secret in the URL path; rejects absent/incorrect tokens.
 - `LARI_PORT`: listener port (default `8643`).
 - `LARI_HERMES_API`, `LARI_HERMES_KEY`: Hermes API endpoint and optional key.
-- `LARI_HERMES_ROOT`: Hermes source tree; defaults to `~/.hermes/hermes-agent`.
+- `LARI_HERMES_ROOT`: Hermes source/install tree used only by the optional features that need it (defaults to `~/.hermes/hermes-agent`).
 - `LARI_HERMES_PROVIDER`, `LARI_HERMES_MODEL`: per-satellite agent model without changing Telegram's model.
 - `LARI_SESSION_KEY`: names the Hermes conversation carried by the satellite (default `lari`); changing its value starts a fresh memory.
 - `LARI_STT_BACKEND`: `whisper` (local), `vosk`, `elevenlabs_realtime` or other configured backend.
