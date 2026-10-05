@@ -2,7 +2,7 @@
 from __future__ import annotations
 import logging
 import numpy as np
-from ..config import Settings
+from ..config import Settings, validate_stt_backend
 log = logging.getLogger("lari")
 SAMPLE_RATE = 16000
 import asyncio
@@ -23,9 +23,8 @@ def _transcribe_local_fallback(pcm: np.ndarray, settings: Settings) -> str:
 
 
 def stt_transcribe(pcm: np.ndarray, settings: Settings) -> str:
-    """Raw text from the configured STT backend: cloud (groq/elevenlabs/openai)
-    or local Whisper. A single dispatch point: _on_wake no longer has to pick
-    by hand (it used to send everything but vosk to local Whisper)."""
+    """Raw text from the configured backend, with strictly local realtime fallback."""
+    validate_stt_backend(settings.stt_backend)
     if settings.stt_backend == realtime_backend.REALTIME_BACKEND:
         # Realtime callers must never silently turn a provider failure into a
         # paid batch request.  The live path is opened only after local wake
@@ -33,7 +32,10 @@ def stt_transcribe(pcm: np.ndarray, settings: Settings) -> str:
         return _transcribe_local_fallback(pcm, settings)
     if settings.stt_backend in stt_backends.BACKENDS:
         return stt_backends.transcribe(pcm, settings.stt_backend, settings=settings)
-    return transcribe(pcm, settings.wake_config, settings.stt_model, settings.stt_lang)
+    if settings.stt_backend == "whisper":
+        return transcribe(pcm, settings.wake_config, settings.stt_model, settings.stt_lang)
+    if settings.stt_backend == "vosk":
+        return transcribe_vosk(pcm, settings.wake_config)
 
 
 async def _transcribe_realtime_or_batch(pcm: np.ndarray, realtime, turn: int,
@@ -67,7 +69,7 @@ async def transcribe_realtime_or_batch(pcm: np.ndarray, realtime, turn: int,
 
 def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None, *, settings: Settings) -> str | None:
     """Transcribe and filter the wake; None = speech not addressed to the bridge."""
-    backend = backend or settings.stt_backend
+    backend = validate_stt_backend(settings.stt_backend if backend is None else backend)
     if backend == "vosk":
         # The grammar only looks at the start: it does not distort free transcription.
         wake = False if followup else vosk_wake(pcm, settings.wake_config)
@@ -89,12 +91,12 @@ def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None
     if backend == "whisper":
         text = transcribe(pcm, settings.wake_config, settings.stt_model, settings.stt_lang)
         return resolve_command(text, float("inf") if followup else 0.0, time.monotonic(), settings.wake_config) if text else None
-    raise ValueError(f"STT backend non supportato: {backend}")
 
 
 
 async def open_stream(on_partial, *, settings: Settings):
     """Open the configured live transport after the local wake gates."""
+    validate_stt_backend(settings.stt_backend)
     if settings.stt_backend != realtime_backend.REALTIME_BACKEND:
         return None, False
     try:
@@ -104,6 +106,7 @@ async def open_stream(on_partial, *, settings: Settings):
 
 
 async def transcribe_turn(pcm, stream, turn, followup, start_failed=False, *, settings: Settings):
+    validate_stt_backend(settings.stt_backend)
     if settings.stt_backend == realtime_backend.REALTIME_BACKEND:
         text, _ = await _transcribe_realtime_or_batch(
             pcm, stream, turn, start_failed=start_failed, settings=settings)
@@ -117,6 +120,7 @@ async def transcribe_turn(pcm, stream, turn, followup, start_failed=False, *, se
 
 
 def command_for_turn(text, followup, local_wake_confirmed, settings: Settings):
+    validate_stt_backend(settings.stt_backend)
     if settings.stt_backend == "vosk":
         return text
     if settings.stt_backend == realtime_backend.REALTIME_BACKEND:

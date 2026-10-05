@@ -18,12 +18,12 @@ from ..config import Settings
 
 log = logging.getLogger(__name__)
 
-BACKENDS = ("elevenlabs", "groq", "openai")
 KEY_ENV = {
     "elevenlabs": "ELEVENLABS_API_KEY",
     "groq": "GROQ_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
+BACKENDS = tuple(KEY_ENV)
 
 def _to_wav(pcm: np.ndarray) -> bytes:
     buf = io.BytesIO()

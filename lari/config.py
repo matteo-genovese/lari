@@ -12,6 +12,20 @@ from .wake.config import WakeConfig, build_wake_config, default_phrase
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# whisper/vosk are local; elevenlabs_realtime streams cloud audio;
+# elevenlabs/groq/openai are batch cloud backends handled by stt/providers.py.
+STT_BACKENDS = ("whisper", "vosk", "elevenlabs_realtime", "elevenlabs", "groq", "openai")
+
+
+def validate_stt_backend(backend: str) -> str:
+    """Share backend-name validation between configuration and dispatch."""
+    if backend not in STT_BACKENDS:
+        raise ValueError(
+            f"LARI_STT_BACKEND: unsupported value {backend!r}; "
+            f"expected one of: {', '.join(STT_BACKENDS)}"
+        )
+    return backend
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -31,6 +45,7 @@ class Settings:
     vosk_model_dir: Path
     stt_lang: str
     stt_gate: str
+    # Mode selector: non-whisper values are forwarded to the optional Hermes engine.
     wake_provider: str
     wake_confirm: bool
     wake_sensitivity: float
@@ -97,6 +112,7 @@ def _bool(env, name, default):
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Read and validate a mapping without mutating it or the environment."""
     env = os.environ if environ is None else environ
+    stt_backend = validate_stt_backend(env.get("LARI_STT_BACKEND", "whisper").strip())
     phrase = env.get("LARI_WAKE_PHRASE", "").strip() or default_phrase(
         env.get("LARI_STT_LANG", "")
     )
@@ -126,7 +142,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         ),
         tts_voice=env.get("LARI_TTS_VOICE", "it-IT-ElsaNeural"),
         stt_model=env.get("LARI_STT_MODEL", "base"),
-        stt_backend=env.get("LARI_STT_BACKEND", "whisper").strip(),
+        stt_backend=stt_backend,
         vosk_model_dir=Path(env.get("LARI_VOSK_MODEL_DIR", str(BASE_DIR / "models/vosk-model-small-it-0.22"))),
         stt_lang=env.get("LARI_STT_LANG", "it").strip(),
         stt_gate=env.get("LARI_STT_GATE", "").strip(),
