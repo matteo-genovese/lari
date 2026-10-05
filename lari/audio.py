@@ -235,7 +235,11 @@ class SessionAudio:
             wav.setsampwidth(2)
             wav.setframerate(SAMPLE_RATE)
             wav.writeframes(data)
-        for old in sorted(calib.glob("mic_*.wav"))[:-8]:
+        # UUID names are not chronological within the same second. Always
+        # retain the recording just written and the seven newest other files.
+        older = sorted((path for path in calib.glob("mic_*.wav") if path != dest),
+                       key=lambda path: path.stat().st_mtime_ns)
+        for old in older[:-7]:
             old.unlink()
         log.info("calibrazione salvata: %s (%.1fs)", dest.name, len(data) / 2 / SAMPLE_RATE)
         return dest

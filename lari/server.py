@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import queue
-import re
 import sys
 import tempfile
 import threading
@@ -145,85 +143,6 @@ logging.basicConfig(
 )
 
 
-def tts(text: str) -> bytes:
-    """Text -> mp3 via edge-tts."""
-    import asyncio as _a
-    import edge_tts
-
-    async def _run():
-        buf = bytearray()
-        comm = edge_tts.Communicate(text, TTS_VOICE)
-        async for chunk in comm.stream():
-            if chunk.get("type") == "audio":
-                buf.extend(chunk["data"])
-        return bytes(buf)
-
-    return _a.run(_run())
-
-
-class SpeakableSentenceBuffer:
-    """Collect SSE deltas without ever cutting a word in half."""
-
-    _END_RE = re.compile(r"[.!?]+(?:[\"'’”»\)\]]+)?(?=\s|$)|[;:]+(?=\s|$)|\n+")
-
-    def __init__(self, max_chars: int = STREAM_SENTENCE_MAX_CHARS,
-                 total_limit: int = STREAM_TEXT_MAX_CHARS):
-        self.max_chars = max(1, max_chars)
-        self.total_limit = max(1, total_limit)
-        self.buffer = ""
-        self.total_chars = 0
-
-    def _take(self, end: int) -> str:
-        sentence = self.buffer[:end].strip()
-        self.buffer = self.buffer[end:].lstrip()
-        return sentence
-
-    def _split_long_prefix(self) -> str | None:
-        if len(self.buffer) <= self.max_chars:
-            return None
-        # Only split at whitespace.  If one token is unusually long, retain it
-        # until punctuation/final flush rather than producing partial-word audio.
-        cut = self.buffer.rfind(" ", 0, self.max_chars + 1)
-        if cut <= 0:
-            return None
-        return self._take(cut)
-
-    def feed(self, delta: str) -> list[str]:
-        if not isinstance(delta, str) or not delta:
-            return []
-        self.total_chars += len(delta)
-        if self.total_chars > self.total_limit:
-            raise RuntimeError("risposta Hermes troppo lunga")
-        self.buffer += delta
-        sentences: list[str] = []
-        while self.buffer:
-            match = self._END_RE.search(self.buffer)
-            if match:
-                sentence = self._take(match.end())
-                if sentence:
-                    sentences.append(sentence)
-                continue
-            sentence = self._split_long_prefix()
-            if sentence:
-                sentences.append(sentence)
-                continue
-            break
-        return sentences
-
-    def flush(self) -> list[str]:
-        sentences: list[str] = []
-        while self.buffer:
-            sentence = self._split_long_prefix()
-            if sentence:
-                sentences.append(sentence)
-                continue
-            sentence = self.buffer.strip()
-            self.buffer = ""
-            if sentence:
-                sentences.append(sentence)
-        return sentences
-
-
 def _hermes_settings():
     # TEMP-P5: preserve patches of the legacy server configuration until P5.
     return replace(
@@ -263,591 +182,19 @@ def _ask_cli(text: str) -> str:
 # ─── wake engine ─────────────────────────────────────────────────────────────
 
 
-class Session(SessionAudio):
-    """State of one satellite connection (one device = one session)."""
-
-    def __init__(self, ws: WebSocket, send_json):
-        self.ws = ws
-        self.send_json = send_json
-        self.engine = None
-        self.state = "listening"           # the worker starts listening immediately
-        self.last_wake = 0.0
-        self._init_audio()
-        self.recv_queue: queue.Queue = queue.Queue(maxsize=400)
-        self.stop = threading.Event()
-        self.turn = 0
-        # rotating calibration buffer: the last ~12 s of microphone, to see
-        # what the detector really hears when it does not fire
-        self.last_tts = 0.0
-        self.conversation_until = 0.0
-        self.awaiting_playback = False
-        self.awaiting_playback_turn: int | None = None
-        self._playback_waiter: asyncio.Future | None = None
-        self.playback_status: str | None = None
-        self._interrupted_turn: int | None = None
-        self._interrupted_followup_task: asyncio.Task | None = None
-        self.active_turn: int | None = None
-        self._turn_task: asyncio.Task | None = None
-        self.hermes_session_id: str | None = None
-        self._partial_turn: int | None = None
-
-    async def _send_partial(self, text: str, turn: int):
-        self._partial_turn = turn
-        await self.send_json({
-            "type": "partial_transcript", "text": text, "turn": turn,
-        })
-
-    async def _clear_partial(self, turn: int):
-        """Remove the browser's in-progress transcript after a discarded turn."""
-        if self._partial_turn is None:
-            return
-        partial_turn = self._partial_turn
-        self._partial_turn = None
-        await self.send_json({
-            "type": "partial_transcript", "text": "", "turn": partial_turn,
-        })
-
-    async def _ask_hermes(self, text: str) -> str:
-        """Ask Hermes and update only this WebSocket's transcript id."""
-        if self.hermes_session_id is None:
-            # Keep the no-argument call compatible with existing test doubles and
-            # first-turn callers.
-            result = await ask_hermes(text)
-        else:
-            result = await ask_hermes(text, session_id=self.hermes_session_id)
-        returned_id = getattr(result, "session_id", None)
-        if returned_id:
-            self.hermes_session_id = returned_id
-        return str(result)
-
-    def _begin_playback(self, turn: int):
-        self.awaiting_playback = True
-        self.awaiting_playback_turn = turn
-        self._playback_waiter = asyncio.get_running_loop().create_future()
-        self.playback_status = "pending"
-
-    @staticmethod
-    def _same_turn(left, right) -> bool:
-        return left is not None and right is not None and str(left) == str(right)
-
-    def mark_playback_done(self, now: float | None = None, turn: int | None = None,
-                           status: str = "completed") -> bool:
-        """Accept only the current turn's completion ACK.
-
-        A missing turn remains accepted for the pre-segmented legacy client.  A
-        failed segmented playback releases the worker without opening follow-up.
-        """
-        if not self.awaiting_playback:
-            return False
-        if turn is not None and not self._same_turn(turn, self.awaiting_playback_turn):
-            return False
-        if status not in {"completed", "failed"}:
-            return False
-        self.awaiting_playback = False
-        self.awaiting_playback_turn = None
-        completed = status == "completed"
-        self.playback_status = status
-        if completed:
-            self.conversation_until = (time.monotonic() if now is None else now) + FOLLOWUP_S
-            # The browser adds 700 ms of mute at the end of playback.
-            self.last_tts = time.time() - ECHO_MUTE_S + 0.7
-        else:
-            self.conversation_until = 0.0
-        waiter = self._playback_waiter
-        if waiter is not None and not waiter.done():
-            waiter.set_result(status)
-        return True
-
-    async def _wait_for_playback(self, turn: int) -> str:
-        if not self.awaiting_playback or not self._same_turn(turn, self.awaiting_playback_turn):
-            return "none"
-        waiter = self._playback_waiter
-        if waiter is None:
-            return "none"
-        try:
-            return await asyncio.wait_for(asyncio.shield(waiter), PLAYBACK_ACK_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            if self.awaiting_playback and self._same_turn(turn, self.awaiting_playback_turn):
-                self.awaiting_playback = False
-                self.conversation_until = 0.0
-                if not waiter.done():
-                    waiter.cancel()
-            return "timeout"
-        finally:
-            if self._playback_waiter is waiter:
-                self._playback_waiter = None
-
-    def _mark_playback_interrupted(self, turn: int) -> None:
-        """Stop playback and mark a valid interruption for delayed follow-up."""
-        if self.awaiting_playback and self._same_turn(turn, self.awaiting_playback_turn):
-            self.awaiting_playback = False
-            self.awaiting_playback_turn = None
-            waiter = self._playback_waiter
-            if waiter is not None and not waiter.done():
-                waiter.set_result("interrupted")
-        self.conversation_until = 0.0
-        self._interrupted_turn = turn
-        self.playback_status = "interrupted"
-        # The browser has already stopped its current MP3, but the speaker can
-        # still be ringing.  Keep the wake detector muted until that tail ends.
-        self.last_tts = time.time()
-
-    async def _open_interrupted_followup(self, turn: int) -> None:
-        """Open the continuation window only after the speaker echo tail."""
-        try:
-            await asyncio.sleep(ECHO_MUTE_S)
-            if (
-                self._interrupted_turn != turn
-                or self.playback_status != "interrupted"
-                or self.turn != turn
-                or self.active_turn is not None
-            ):
-                return
-            self.conversation_until = time.monotonic() + FOLLOWUP_S
-            log.info("turno %d: follow-up post-interruzione attivo per %.0fs", turn, FOLLOWUP_S)
-            await self.send_json({
-                "type": "followup", "seconds": FOLLOWUP_S, "interrupted": True,
-            })
-        except asyncio.CancelledError:
-            raise
-        finally:
-            if self._interrupted_followup_task is asyncio.current_task():
-                self._interrupted_followup_task = None
-
-    async def interrupt_current_turn(self, turn) -> bool:
-        """Cancel one active turn after validating its exact current id.
-
-        Cancellation closes an in-flight Hermes SSE response and the bounded TTS
-        worker.  It is deliberately not converted into a retry: Hermes tools or
-        approvals may already have caused side effects.
-        """
-        task = self._turn_task
-        if (
-            task is None
-            or task.done()
-            or not self._same_turn(turn, self.active_turn)
-        ):
-            return False
-
-        current_turn = self.active_turn
-        self._mark_playback_interrupted(current_turn)
-        task.cancel()
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            log.exception("errore durante l'interruzione del turno %s", current_turn)
-
-        await self.send_json({
-            "type": "interrupt_ack", "turn": current_turn,
-            "status": "interrupted", "echo_tail_ms": int(ECHO_MUTE_S * 1000),
-        })
-        await self.set_state("listening", turn=current_turn, interrupted=True)
-        if self._interrupted_followup_task is not None:
-            self._interrupted_followup_task.cancel()
-        self._interrupted_followup_task = asyncio.create_task(
-            self._open_interrupted_followup(current_turn)
-        )
-        return True
-
-    async def _send_segmented_audio(self, turn: int, sequence: int, audio: bytes,
-                                    started: bool) -> bool:
-        if self.playback_status == "interrupted" and self._same_turn(turn, self.active_turn):
-            return False
-        if not started:
-            self._begin_playback(turn)
-            await self.set_state("speaking", turn=turn)
-            await self.send_json({"type": "audio_start", "turn": turn})
-        if self.playback_status == "interrupted" and self._same_turn(turn, self.active_turn):
-            return False
-        await self.send_json({"type": "audio_chunk", "turn": turn, "seq": sequence})
-        if self.ws is None:
-            raise RuntimeError("websocket audio non disponibile")
-        if self.playback_status == "interrupted" and self._same_turn(turn, self.active_turn):
-            return False
-        await self.ws.send_bytes(audio)
-        self.last_tts = time.time()
-        return True
-
-    async def _stream_hermes_speak(self, text: str, turn: int) -> tuple[str, bool, bool]:
-        """Stream Hermes deltas into one ordered, bounded TTS worker.
-
-        Returns ``(reply, had_audio, tts_failed)``.  Any stream failure is
-        raised as ``HermesStreamTurnError`` after already-queued audio is drained;
-        it is intentionally never retried because tools may have run.
-        """
-        sentence_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=max(1, STREAM_TTS_QUEUE_MAX))
-        sentence_buffer = SpeakableSentenceBuffer()
-        worker_error: Exception | None = None
-        stream_error: Exception | None = None
-        started = False
-        sequence = 0
-
-        async def on_delta(delta: str):
-            for sentence in sentence_buffer.feed(delta):
-                await sentence_queue.put(sentence)
-
-        async def on_approval(event: dict):
-            # Keep approvals observable without allowing their metadata into
-            # spoken text.  The browser can ignore this optional event.
-            await self.send_json({"type": "approval", "turn": turn, "approval": event})
-
-        async def tts_worker():
-            nonlocal worker_error, started, sequence
-            while True:
-                sentence = await sentence_queue.get()
-                try:
-                    if sentence is None:
-                        return
-                    if worker_error is not None:
-                        continue
-                    try:
-                        audio = await asyncio.to_thread(tts, sentence)
-                        if not audio:
-                            continue
-                        started = await self._send_segmented_audio(
-                            turn, sequence, audio, started,
-                        )
-                        sequence += 1
-                    except Exception as exc:
-                        worker_error = exc
-                finally:
-                    sentence_queue.task_done()
-
-        worker = asyncio.create_task(tts_worker())
-        try:
-            try:
-                session_id = self.hermes_session_id
-                result = await stream_hermes(
-                    text,
-                    session_id=session_id,
-                    on_delta=on_delta,
-                    on_approval=on_approval,
-                )
-            except Exception as exc:
-                stream_error = exc
-            else:
-                for sentence in sentence_buffer.flush():
-                    await sentence_queue.put(sentence)
-            await sentence_queue.join()
-            await sentence_queue.put(None)
-            await worker
-        finally:
-            if not worker.done():
-                worker.cancel()
-                await asyncio.gather(worker, return_exceptions=True)
-
-        if started:
-            await self.send_json({"type": "audio_end", "turn": turn})
-        if stream_error is not None:
-            raise HermesStreamTurnError("stream Hermes non disponibile", started) from None
-
-        # HermesReply publishes its session id only after completion. Do not touch
-        # the WebSocket transcript id before this point, including when TTS
-        # fails after the Hermes turn itself completed.
-        returned_id = getattr(result, "session_id", None)
-        if returned_id:
-            self.hermes_session_id = returned_id
-        if worker_error is not None:
-            # A TTS failure is not an excuse to submit Hermes again.  The final
-            # text is still returned once, while the caller reports the audio
-            # failure and waits for any already-sent segments to finish.
-            return str(result), started, True
-        return str(result), started, False
-
-    async def set_state(self, state: str, **extra):
-        self.state = state
-        await self.send_json({"type": "state", "state": state, **extra})
-
-    # —— wake: runs in a dedicated thread; the event loop must never block ——
 
 
-    def _launch_local_candidate(self, candidate: bytes) -> bool:
-        """Apply local wake/follow-up policy and schedule exactly one turn."""
-        if not candidate:
-            return False
-        followup = time.monotonic() < self.conversation_until and not self.awaiting_playback
-        if not followup:
-            pcm = np.frombuffer(candidate, dtype=np.int16)
-            if not vosk_wake(pcm):
-                log.info("candidato parlato scartato dal gate Vosk locale")
-                self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
-                return False
-            if WAKE_CONFIRM and not confirm_candidate(pcm):
-                log.info("candidato scartato dal secondo gate locale")
-                self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
-                return False
-        if self.echo_muted(time.time(), ECHO_MUTE_S):
-            return False
-        self.last_wake = time.time()
-        self.state = "waking"
-        asyncio.run_coroutine_threadsafe(
-            self._on_wake(
-                initial_pcm=candidate,
-                local_wake_confirmed=not followup,
-            ),
-            _loop,
-        )
-        return True
-
-    def wake_worker(self):
-        self.engine = None
-        if WAKE_PROVIDER != "whisper":
-            try:
-                self.engine = make_engine()
-            except Exception:
-                log.exception("impossibile creare l'engine wake")
-                asyncio.run_coroutine_threadsafe(
-                    self.send_json({"type": "fatal", "error": "wake engine startup failed"}), _loop
-                )
-                return
-        else:
-            log.info("wake provider=whisper: VAD energia + gate Vosk locale")
-        buf = bytearray()
-        speech_streak = 0
-        stat_t = time.time()
-        stat_frames = 0
-        stat_peak = 0.0
-        while not self.stop.is_set():
-            st = self.state
-            if time.time() - stat_t >= 5.0:
-                log.info("audio: %d frame/5s, rms peak %.0f, noise floor %.0f, state=%s",
-                         stat_frames, stat_peak, self.noise_floor, st)
-                stat_t, stat_frames, stat_peak = time.time(), 0, 0.0
-            if st in ("waking", "recording"):
-                time.sleep(0.05)
-                continue
-            if st != "listening":
-                try:
-                    chunk = self.recv_queue.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-                if chunk is None:
-                    return
-                buf.clear()
-                speech_streak = 0
-                continue
-            try:
-                chunk = self.recv_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if chunk is None:
-                return
-            stat_frames += 1
-            self._remember_audio(chunk)
-            buf += chunk
-            while len(buf) >= FRAME * 2:
-                frame = bytes(buf[: FRAME * 2])
-                del buf[: FRAME * 2]
-                arr = np.frombuffer(frame, dtype=np.int16)
-                rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
-                stat_peak = max(stat_peak, rms)
-                thr = self.update_noise_floor(rms)
-                if WAKE_PROVIDER == "whisper":
-                    speech_streak = speech_streak + 1 if rms >= thr else 0
-                    need = 3 if self.noise_floor < 2000 else 8
-                    hit = speech_streak >= need
-                else:
-                    try:
-                        hit = self.engine.process(arr)
-                    except Exception:
-                        log.exception("errore engine")
-                        hit = False
-                now = time.time()
-                if hit and self.echo_muted(now, ECHO_MUTE_S):
-                    continue
-                if hit and now - self.last_wake >= COOLDOWN_S and rms > 200:
-                    prelude = self.pre_roll()
-                    followup = time.monotonic() < self.conversation_until and not self.awaiting_playback
-                    candidate = self._candidate_from_queue(prelude, wait_for_gate=not followup)
-                    if self._launch_local_candidate(candidate) or followup:
-                        buf.clear()
-                        speech_streak = 0
-                        break
-                    buf.clear()
-                    speech_streak = 0
-
-    async def _on_wake(self, initial_pcm: bytes = b"",
-                       local_wake_confirmed: bool = False):
-        current_task = asyncio.current_task()
-        self.turn += 1
-        turn = self.turn
-        self._turn_paid_s = 0.0
-        self.active_turn = turn
-        self._turn_task = current_task
-
-        def clear_active_turn(done_task):
-            if self._turn_task is done_task:
-                self._turn_task = None
-            if self.active_turn == turn:
-                self.active_turn = None
-
-        if current_task is not None:
-            current_task.add_done_callback(clear_active_turn)
-        t_turn = time.time()
-        # The window must be evaluated when speech starts, NOT after STT:
-        # On slow CPUs transcription can take many seconds.
-        followup_at_start = time.monotonic() < self.conversation_until and not self.awaiting_playback
-        await self.set_state("waking", turn=turn, followup=followup_at_start)
-        await self._clear_partial(turn)
-        # pre-roll: the wake phrase has already passed while the trigger decides,
-        # so restart from the last 1.5 s already held in the rotating buffer
-        prelude = bytes(initial_pcm)
-        if not prelude and WAKE_PROVIDER == "whisper":
-            prelude = self.pre_roll()
-        # pause only if a reply was just played (TTS echo)
-        if self.echo_muted(time.time(), 3.0):
-            await asyncio.sleep(0.25)
-        await self.set_state("recording", turn=turn, followup=followup_at_start)
-        realtime, realtime_start_failed = await _dispatch.open_stream(
-            on_partial=lambda text: self._send_partial(text, turn),
-        )
-        if realtime_start_failed:
-            await self.send_json({"type": "stt_status", "mode": "local", "turn": turn})
-        try:
-            pcm = await self._record_utterance(prelude, realtime=realtime)
-        except Exception:
-            if realtime is not None:
-                await realtime.close()
-            log.exception("errore registrazione")
-            await self._clear_partial(turn)
-            await self.set_state("listening")
-            return
-        if pcm is None or len(pcm) < int(MIN_SPEECH_S * SAMPLE_RATE):
-            if realtime is not None:
-                await realtime.close()
-            await self._clear_partial(turn)
-            await self.set_state("listening", note="niente da trascrivere")
-            return
-
-        try:
-            saved = save_turn_audio(pcm)
-            log.info("turno %d: audio per diagnostica %s", turn, saved.name)
-        except Exception:
-            log.exception("impossibile salvare il WAV diagnostico")
-        await self.set_state("transcribing", turn=turn)
-        try:
-            text = await _dispatch.transcribe_turn(
-                pcm, realtime, turn, followup_at_start,
-                start_failed=realtime_start_failed,
-            )
-        except Exception as exc:
-            log.exception("STT fallito")
-            await self._clear_partial(turn)
-            await self.set_state("listening", error=f"stt: {exc}")
-            return
-        if text is None:
-            await self._clear_partial(turn)
-            await self.set_state("listening")
-            return
-        if WAKE_PROVIDER == "whisper":
-            cmd = _dispatch.command_for_turn(text, followup_at_start, local_wake_confirmed)
-            if cmd is None:
-                log.info("turno %d scartato (fuori dalla conversazione): %r", turn, text[:80])
-                self.last_wake = time.time() + AMBIENT_PAUSE_S - COOLDOWN_S
-                await self._clear_partial(turn)
-                await self.set_state("listening", note="non era per me")
-                return
-            if not cmd.strip():
-                log.info("turno %d: sveglia senza comando", turn)
-                await self._clear_partial(turn)
-                await self._speak("Sì?", turn)
-                await self.set_state("listening", turn=turn)
-                return
-            text = cmd.strip()
-            self.conversation_until = 0.0  # next turn only after playback
-            log.info("comando %s: %r", "follow-up" if followup_at_start else "wake", text[:120])
-            self._partial_turn = None
-            await self.send_json({"type": "transcript", "text": text, "turn": turn, "command": True})
-        else:
-            self._partial_turn = None
-            await self.send_json({"type": "transcript", "text": text, "turn": turn})
-
-        await self.set_state("thinking", turn=turn)
-        stream_had_audio = False
-        try:
-            reply, stream_had_audio, tts_failed = await self._stream_hermes_speak(text, turn)
-        except HermesStreamTurnError as exc:
-            # The stream may already have run tools or emitted audio.  Never
-            # reissue this turn through ask_hermes; surface only a safe error.
-            log.warning("turno %d: %s", turn, exc)
-            reply = "Non riesco a completare la risposta."
-            tts_failed = False
-            stream_had_audio = exc.had_audio
-        except Exception:
-            log.exception("stream Hermes fallito")
-            reply = "Non riesco a completare la risposta."
-            tts_failed = False
-        await self.send_json({"type": "reply", "text": reply, "turn": turn})
-        if stream_had_audio:
-            playback = await self._wait_for_playback(turn)
-            if playback == "completed":
-                await self.set_state("listening", turn=turn)
-            elif playback == "failed":
-                await self.set_state("listening", turn=turn, error="playback fallito")
-            else:
-                await self.set_state("listening", turn=turn, error="playback timeout")
-        elif tts_failed:
-            await self.set_state("listening", turn=turn, error="tts non disponibile")
-        elif reply:
-            # A successful stream with no usable MP3 is safe to handle with
-            # the old single-response TTS path: Hermes is not called again.
-            await self._speak(reply, turn)
-            if self.awaiting_playback:
-                playback = await self._wait_for_playback(turn)
-                if playback == "completed":
-                    await self.set_state("listening", turn=turn)
-                elif playback == "failed":
-                    await self.set_state("listening", turn=turn, error="playback fallito")
-                else:
-                    await self.set_state("listening", turn=turn, error="playback timeout")
-            else:
-                await self.set_state("listening", turn=turn)
-        else:
-            await self.set_state("listening", turn=turn)
-        self._record_usage()
-        log.info("turno %d completato in %.1fs", turn, time.time() - t_turn)
-        return
-
-    async def _speak(self, text: str, turn: int):
-        """TTS -> audio to the client; on error log and return to listening."""
-        await self.set_state("speaking", turn=turn)
-        try:
-            audio = await asyncio.to_thread(tts, text)
-        except Exception as exc:
-            log.exception("TTS fallito")
-            await self.set_state("listening", error=f"tts: {exc}")
-            return
-        if audio:
-            self._begin_playback(turn)
-            await self.send_json({"type": "audio", "fmt": "mp3", "bytes": len(audio), "turn": turn})
-            if self.ws is None:
-                await self.set_state("listening", error="websocket audio non disponibile")
-                self.awaiting_playback = False
-                return
-            await self.ws.send_bytes(audio)
-            self.last_tts = time.time()
-
-    def _record_usage(self) -> None:
-        """Best-effort accounting for the monthly usage report."""
-        import datetime
-        try:
-            paid = float(getattr(self, "_turn_paid_s", 0.0) or 0.0)
-            USAGE_LEDGER.record(
-                datetime.date.today().isoformat(),
-                turns=1,
-                realtime_s=paid,
-                local_turns=0 if paid else 1,
-            )
-        except Exception:
-            log.exception("impossibile registrare l'usage")
-        finally:
-            self._turn_paid_s = 0.0
+# TEMP-P5: public Session/voice names and monkeypatch compatibility.
+from . import session as _session, tts as _tts
+from .wake import runtime as _wake_runtime
+from .session import Session
+from .tts import tts, SpeakableSentenceBuffer, TTSUnavailable
+_session.ask_hermes = ask_hermes
+_session.stream_hermes = stream_hermes
+_session.USAGE_LEDGER = USAGE_LEDGER
 
 
 app = FastAPI(title="Lari")
-_loop: asyncio.AbstractEventLoop | None = None
 _sessions: set[Session] = set()
 
 
@@ -961,6 +308,7 @@ async def ws_endpoint(token: str, websocket: WebSocket):
     session = Session(websocket, _make_sender(websocket))
     _sessions.add(session)
     worker = threading.Thread(target=session.wake_worker, daemon=True, name="wake-worker")
+    session.worker = worker
     worker.start()
     await session.send_json({
         "type": "state", "state": "listening",
@@ -974,8 +322,7 @@ async def ws_endpoint(token: str, websocket: WebSocket):
             if msg.get("type") == "websocket.disconnect":
                 break
             if "bytes" in msg and msg["bytes"] is not None:
-                if session.recv_queue.qsize() < session.recv_queue.maxsize:
-                    session.recv_queue.put_nowait(msg["bytes"])
+                await session.on_audio(msg["bytes"])
             elif "text" in msg and msg["text"]:
                 try:
                     data = json.loads(msg["text"])
@@ -985,14 +332,9 @@ async def ws_endpoint(token: str, websocket: WebSocket):
                     await session.send_json({"type": "pong", "state": session.state})
                 elif data.get("type") == "playback_done":
                     status = data.get("status", "completed")
-                    accepted = session.mark_playback_done(
-                        turn=data.get("turn"), status=status,
-                    )
-                    if accepted and status == "completed":
-                        log.info("turno %d: follow-up attivo per %.0fs", session.turn, FOLLOWUP_S)
-                        await session.send_json({"type": "followup", "seconds": FOLLOWUP_S})
+                    await session.playback_completed(data.get("turn"), status=status)
                 elif data.get("type") == "interrupt":
-                    accepted = await session.interrupt_current_turn(data.get("turn"))
+                    accepted = await session.interrupt(data.get("turn"))
                     if not accepted:
                         await session.send_json({
                             "type": "interrupt_rejected", "turn": data.get("turn"),
@@ -1006,13 +348,7 @@ async def ws_endpoint(token: str, websocket: WebSocket):
     except Exception:
         log.exception("websocket error")
     finally:
-        session.stop.set()
-        if session._interrupted_followup_task is not None:
-            session._interrupted_followup_task.cancel()
-        try:
-            session.recv_queue.put_nowait(None)
-        except Exception:
-            pass
+        await session.disconnect()
         # calibration: save the last ~12 s of microphone so it can be
         # re-analyzed offline after each user test
         try:
@@ -1021,11 +357,6 @@ async def ws_endpoint(token: str, websocket: WebSocket):
             log.exception("salvataggio calibrazione fallito")
         log.info("sessione chiusa (turni: %d, ultimo stato: %s)", session.turn, session.state)
         _sessions.discard(session)
-        if session.engine:
-            try:
-                session.engine.close()
-            except Exception:
-                pass
         log.info("sessione chiusa")
 
 
@@ -1041,8 +372,6 @@ def _make_sender(websocket: WebSocket):
 
 @app.on_event("startup")
 async def _startup():
-    global _loop
-    _loop = asyncio.get_running_loop()
     if not TOKEN:
         log.warning("LARI_TOKEN non imposto: il server rifiuta tutto")
 
@@ -1052,12 +381,16 @@ async def _startup():
 import types as _types
 class _CompatibilityModule(_types.ModuleType):
     def __setattr__(self, name, value):
-        for module in (_detector, _confirm, _local, _vosk, _dispatch, _audio):
+        for module in (_detector, _confirm, _local, _vosk, _dispatch, _audio, _session, _tts, _wake_runtime):
             if name in _COMPAT_NAMES and hasattr(module, name):
                 setattr(module, name, value)
         super().__setattr__(name, value)
 
 _COMPAT_NAMES = {
+    'tts', 'stream_hermes', 'ask_hermes', 'USAGE_LEDGER',
+    'TTS_VOICE', 'STREAM_TTS_QUEUE_MAX', 'STREAM_TEXT_MAX_CHARS',
+    'STREAM_SENTENCE_MAX_CHARS', 'ECHO_MUTE_S', 'FOLLOWUP_S',
+    'PLAYBACK_ACK_TIMEOUT_S', 'WAKE_CONFIRM', 'AMBIENT_PAUSE_S',
     'BASE_DIR',
     'CONFIRM_FRAMES',
     'IDLE_ABORT_S',

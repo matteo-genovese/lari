@@ -229,6 +229,9 @@ class RealtimeScribe:
             await asyncio.wait_for(session._started.wait(), REALTIME_SESSION_TIMEOUT_S)
             if session._error:
                 raise RealtimeUnavailable("realtime provider error")
+        except asyncio.CancelledError:
+            await session.close()
+            raise
         except RealtimeUnavailable:
             await session.close()
             raise
