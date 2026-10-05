@@ -6,11 +6,28 @@ from ..config import Settings
 log = logging.getLogger("lari")
 SAMPLE_RATE = 16000
 import json
+import importlib.util
 import sys
 import threading
+from contextlib import contextmanager
+from pathlib import Path
+from uuid import uuid4
 from . import config as wake_config
 _vosk_models = {}
 _vosk_lock = threading.Lock()
+_hermes_import_lock = threading.RLock()
+
+
+@contextmanager
+def _hermes_import_path(root):
+    """Scope Hermes' absolute sibling imports to optional engine construction."""
+    with _hermes_import_lock:
+        previous = sys.path[:]
+        sys.path.insert(0, str(root))
+        try:
+            yield
+        finally:
+            sys.path[:] = previous
 
 def _wake_engine_builder(hermes_root):
     """Lazy loader for the optional openwakeword engine from the Hermes source.
@@ -19,15 +36,39 @@ def _wake_engine_builder(hermes_root):
     lazily keeps the bridge importable without a Hermes checkout (CI, fresh
     installs).
     """
-    sys.path.insert(0, str(hermes_root))
-    try:
-        from tools.wake_word import _build_engine  # noqa: PLC0415
-    except ImportError as exc:
+    path = Path(hermes_root) / "tools" / "wake_word.py"
+    if not path.is_file():
         raise RuntimeError(
-            "the openwakeword wake engine needs the Hermes source in "
-            "LARI_HERMES_ROOT"
-        ) from exc
-    return _build_engine
+            f"optional wake engine: missing Hermes module {path}; "
+            "set LARI_HERMES_ROOT to a Hermes checkout containing tools/wake_word.py"
+        )
+
+    def build(cfg):
+        # A private name avoids reusing tools.wake_word from another checkout.
+        name = f"_lari_hermes_wake_{uuid4().hex}"
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"optional wake engine: cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        with _hermes_import_path(hermes_root):
+            # dataclasses and other module introspection require this during exec.
+            sys.modules[name] = module
+            try:
+                spec.loader.exec_module(module)
+                builder = getattr(module, "_build_engine", None)
+                if not callable(builder):
+                    raise RuntimeError(f"optional wake engine: missing callable _build_engine in {path}")
+                return builder(cfg)
+            except ImportError as exc:
+                raise RuntimeError(
+                    f"optional wake engine: missing dependency {exc.name or str(exc)!r} "
+                    f"while loading {path}; check LARI_HERMES_ROOT and install "
+                    "the dependencies for the configured Hermes wake provider"
+                ) from exc
+            finally:
+                sys.modules.pop(name, None)
+
+    return build
 
 
 def wake_command(text: str, cfg: wake_config.WakeConfig) -> str | None:

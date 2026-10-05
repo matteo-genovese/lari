@@ -26,6 +26,16 @@ app = FastAPI(title="Lari")
 _sessions: set[Session] = set()
 
 
+class _TemporaryWavResponse(FileResponse):
+    """Keep the private WAV through transmission, including error responses."""
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            Path(self.path).unlink(missing_ok=True)
+
+
 @app.get("/")
 async def root():
     return Response(content="lari: open /<token>/", media_type="text/plain")
@@ -41,14 +51,21 @@ async def debug_last(token: str):
             data = bytes(s.recent)
         if data:
             import wave
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
-                path = fh.name
-                with wave.open(fh, "wb") as w:
-                    w.setnchannels(1)
-                    w.setsampwidth(2)
-                    w.setframerate(SAMPLE_RATE)
-                    w.writeframes(data)
-            return FileResponse(path, media_type="audio/wav", filename="last.wav")
+            fh = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            path = fh.name
+            try:
+                with fh:
+                    with wave.open(fh, "wb") as w:
+                        w.setnchannels(1)
+                        w.setsampwidth(2)
+                        w.setframerate(SAMPLE_RATE)
+                        w.writeframes(data)
+                    response = _TemporaryWavResponse(
+                        path, media_type="audio/wav", filename="last.wav")
+            except BaseException:
+                Path(path).unlink(missing_ok=True)
+                raise
+            return response
     return Response(content="nessuna sessione attiva", status_code=404)
 
 
