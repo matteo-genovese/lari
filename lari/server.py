@@ -1782,7 +1782,9 @@ async def ws_endpoint(token: str, websocket: WebSocket):
                 calib.mkdir(exist_ok=True)
                 import wave as _wave
                 dest = calib / f"mic_{time.strftime('%Y%m%d_%H%M%S')}.wav"
-                with _wave.open(str(dest), "wb") as w:
+                dest.unlink(missing_ok=True)
+                fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as output, _wave.open(output, "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
                     w.writeframes(data)
                 for old in sorted(calib.glob("mic_*.wav"))[:-8]:
