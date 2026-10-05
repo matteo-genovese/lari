@@ -11,11 +11,13 @@ import os
 import threading
 from pathlib import Path
 
+from .config import Settings, get_settings
+
 
 class UsageLedger:
-    def __init__(self, path: str | Path | None = None):
-        default = Path(__file__).resolve().parent.parent / "usage.json"
-        self.path = Path(path or os.environ.get("LARI_USAGE_LEDGER", default))
+    def __init__(self, path: str | Path | None = None, *, settings: Settings | None = None):
+        settings = settings or get_settings()
+        self.path = Path(path or settings.usage_ledger)
         self._lock = threading.Lock()
 
     def _load(self) -> dict:

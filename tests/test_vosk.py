@@ -4,7 +4,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 
@@ -77,15 +77,17 @@ class VoskSessionTests(unittest.IsolatedAsyncioTestCase):
         session = server.Session(None, send)
         session._record_utterance = AsyncMock(return_value=np.ones(server.SAMPLE_RATE, dtype=np.int16))
         session._speak = AsyncMock()
+        session._record_usage = Mock()
         with patch.object(server, "STT_BACKEND", "vosk"), \
-             patch.object(server, "AGENT_BACKEND", "legacy"), \
              patch.object(server, "save_turn_audio", return_value=Path("fake.wav")), \
              patch.object(server, "decode_utterance", return_value="please help") as decode, \
-             patch.object(server, "ask_hermes", new_callable=AsyncMock, return_value="How can I help?") as agent:
+             patch.object(server, "stream_hermes", new_callable=AsyncMock, return_value="How can I help?") as agent:
             await session._on_wake()
         decode.assert_called_once()
         self.assertEqual(decode.call_args.args[1], False)
-        agent.assert_awaited_once_with("please help")
+        agent.assert_awaited_once()
+        self.assertEqual(agent.call_args.args, ("please help",))
+        self.assertIsNone(agent.call_args.kwargs["session_id"])
         self.assertTrue(
             any(msg.get("type") == "transcript" and msg.get("text") == "please help" for msg in sent)
         )

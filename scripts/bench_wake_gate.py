@@ -18,7 +18,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lari import server, wake_config
+from lari import server
+from lari.config import load_settings
 
 
 def load(path: Path) -> np.ndarray:
@@ -28,7 +29,7 @@ def load(path: Path) -> np.ndarray:
 
 
 def main(argv: list[str]) -> int:
-    cfg = wake_config.from_env()
+    cfg = load_settings().wake_config
     server.WAKE_CONFIG = cfg
     print(f"phrase={cfg.phrase!r} model={server.STT_MODEL!r}")
     print(f"{'clip':<42} {'dur':>5} {'gateA':>5} {'free/whisper clean':>20} "

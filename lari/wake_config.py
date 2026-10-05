@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping
+from typing import Iterable
 
 # Common spoken interjections accepted before the wake phrase itself.
 INTERJECTIONS = ("hey", "ehi", "eh", "e", "hi", "ok", "ciao", "yo")
@@ -270,21 +270,4 @@ def build_wake_config(phrase: str, aliases: Iterable[str] = (),
         mention_re=mention_re,
         doubt_starters=doubt_starters,
         junk_words=junk_words,
-    )
-
-
-def from_env(environ: Mapping[str, str] | None = None) -> WakeConfig:
-    """Build the config from LARI_* settings."""
-    import os
-    env = os.environ if environ is None else environ
-    phrase = env.get("LARI_WAKE_PHRASE", "").strip() or default_phrase(
-        env.get("LARI_STT_LANG", "")
-    )
-    aliases = (a for a in env.get("LARI_WAKE_ALIASES", "").split(","))
-    vocab = (t for t in env.get("LARI_STT_KEYTERMS", "").split(","))
-    return build_wake_config(
-        phrase,
-        aliases=aliases,
-        vocab=vocab,
-        command_override=env.get("LARI_WAKE_RE", "").strip() or None,
     )

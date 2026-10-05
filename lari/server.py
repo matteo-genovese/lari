@@ -27,9 +27,12 @@ from fastapi.responses import FileResponse, Response
 
 from . import stt_backends
 from . import wake_config
+from .config import get_settings
+
+_SETTINGS = get_settings()
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # repo root; runtime paths never depend on cwd
-HERMES_ROOT = Path(os.environ.get("LARI_HERMES_ROOT") or (Path.home() / ".hermes" / "hermes-agent")).expanduser()
+HERMES_ROOT = _SETTINGS.hermes_root
 sys.path.insert(0, str(HERMES_ROOT))
 
 
@@ -50,66 +53,20 @@ def _wake_engine_builder():
     return _build_engine
 
 # ─── configuration ──────────────────────────────────────────────────────────
-TOKEN = os.environ.get("LARI_TOKEN", "").strip()
-PORT = int(os.environ.get("LARI_PORT", "8643"))
-HERMES_API = os.environ.get("LARI_HERMES_API", "http://127.0.0.1:8642")
-HERMES_KEY = os.environ.get("LARI_HERMES_KEY", "")
-SESSION_KEY = os.environ.get("LARI_SESSION_KEY", "lari")
-HERMES_PROVIDER = os.environ.get("LARI_HERMES_PROVIDER", "deepseek")
-HERMES_MODEL = os.environ.get("LARI_HERMES_MODEL", "deepseek-flash")
-# ─── voice agent ──────────────────────────────────────────────────────
-# "deepseek" = DeepSeek flash via direct API (fast, NO tools: weather and
-# news are not real-time). "hermes" = the full Hermes agent (real tools,
-# much slower: 18k tokens of system prompt per utterance).
-AGENT_BACKEND = os.environ.get("LARI_AGENT_BACKEND", "deepseek").strip()
+TOKEN = _SETTINGS.token
+PORT = _SETTINGS.port
+HERMES_API = _SETTINGS.hermes_api
+HERMES_KEY = _SETTINGS.hermes_key
+SESSION_KEY = _SETTINGS.session_key
+HERMES_PROVIDER = _SETTINGS.hermes_provider
+HERMES_MODEL = _SETTINGS.hermes_model
 
 from . import usage  # noqa: E402  (project module)
 USAGE_LEDGER = usage.UsageLedger()
 
-def _deepseek_from_hermes_env() -> tuple[str, str]:
-    """DeepSeek key/base URL also from ~/.hermes/.env.
-
-    The systemd unit loads only the bridge's .env; the key lives in the
-    Hermes config.
-    """
-    key = base = ""
-    try:
-        for line in (Path.home() / ".hermes" / ".env").read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            name, value = line.split("=", 1)
-            if name.strip() == "DEEPSEEK_API_KEY":
-                key = value.strip().strip("\"'")
-            elif name.strip() == "DEEPSEEK_BASE_URL":
-                base = value.strip().strip("\"'")
-    except OSError:
-        pass
-    return key, base
-
-_ds_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-_ds_base = os.environ.get("DEEPSEEK_BASE_URL", "").strip()
-if not _ds_key or not _ds_base:
-    _hk, _hb = _deepseek_from_hermes_env()
-    _ds_key = _ds_key or _hk
-    _ds_base = _ds_base or _hb
-DEEPSEEK_KEY = _ds_key
-DEEPSEEK_API = _ds_base.rstrip("/") or "https://api.deepseek.com"
-DEEPSEEK_MODEL = os.environ.get("LARI_DEEPSEEK_MODEL", "deepseek-flash")
-DEEPSEEK_TIMEOUT_S = float(os.environ.get("LARI_DEEPSEEK_TIMEOUT", "60"))
 # Voice = short replies meant to be spoken. Without this, a bogus
 # transcription makes the agent dig through logs (125 s in the worst measured case).
-VOICE_SYSTEM = os.environ.get(
-    "LARI_VOICE_SYSTEM",
-    "Sei l'assistente vocale di un assistente personale. Le battute ti arrivano da un "
-    "microfono, quindi possono essere trascritte in modo imperfetto: se il senso è "
-    "intuibile rispondi comunque con la tua interpretazione migliore («ehi ora sono» va "
-    "letto come «che ora sono»), chiedendo di ripetere SOLO se è davvero incomprensibile "
-    "e in tal caso in una sola riga e senza strumenti. Rispondi SEMPRE in italiano, con "
-    "frasi brevi e naturali (massimo 30 secondi di lettura), pensate per essere ascoltate "
-    "a voce alta. Non fare liste, non usare markdown, non citare file o percorsi. "
-    "Usa gli strumenti solo se la richiesta lo richiede davvero.",
-)
+VOICE_SYSTEM = _SETTINGS.voice_system
 
 
 class HermesContinuationError(RuntimeError):
@@ -139,28 +96,28 @@ class HermesReply(str):
         return reply
 
 
-TTS_VOICE = os.environ.get("LARI_TTS_VOICE", "it-IT-ElsaNeural")
-STT_MODEL = os.environ.get("LARI_STT_MODEL", "base")
-STT_BACKEND = os.environ.get("LARI_STT_BACKEND", "whisper").strip()
-VOSK_MODEL_DIR = Path(os.environ.get("LARI_VOSK_MODEL_DIR", str(BASE_DIR / "models/vosk-model-small-it-0.22")))
-STT_LANG = os.environ.get("LARI_STT_LANG", "it").strip()  # "" = auto-detect
+TTS_VOICE = _SETTINGS.tts_voice
+STT_MODEL = _SETTINGS.stt_model
+STT_BACKEND = _SETTINGS.stt_backend
+VOSK_MODEL_DIR = _SETTINGS.vosk_model_dir
+STT_LANG = _SETTINGS.stt_lang  # "" = auto-detect
 # Fast gate for the wake: on bad audio the large model takes 50-60 s and
 # blocks everything. With a small model the rejection arrives in seconds.
 # Empty ("") = a single pass with the large model.
 # A tiny model used as veto also rejects genuine wake words.
 # A single pass with small: fewer false negatives and no double transcription.
-STT_GATE = os.environ.get("LARI_STT_GATE", "").strip()
+STT_GATE = _SETTINGS.stt_gate
 
 SAMPLE_RATE = 16000
 FRAME = 1280              # 80 ms @ 16 kHz, frame size recommended by openWakeWord
-WAKE_PROVIDER = os.environ.get("LARI_WAKE_PROVIDER", "whisper")
+WAKE_PROVIDER = _SETTINGS.wake_provider
 # whisper: any speech starts the recording, then the phrase is searched in the text.
 # sherpa/openwakeword: dedicated hotword engine (English; misses the IT pronunciation).
 # The wake phrase is one setting: command regex, Vosk grammar, junk cleanup and
 # ASR keyterms all derive from it in wake_config.py.  The regex anchors the
 # wake as an address (transcript start or after a sentence boundary) so
 # background mentions ("ho parlato con ...") never trigger.
-WAKE_CONFIG = wake_config.from_env()
+WAKE_CONFIG = _SETTINGS.wake_config
 WAKE_RE = WAKE_CONFIG.command_re
 
 def wake_command(text: str, cfg: wake_config.WakeConfig | None = None) -> str | None:
@@ -182,39 +139,38 @@ WAKE_PHRASE = WAKE_CONFIG.phrase
 # It may veto only a confident mismatch (see confirm_candidate): every doubt
 # passes, so a real wake is never lost to an ASR mishearing.  Set
 # LARI_WAKE_CONFIRM=0 to disable.
-WAKE_CONFIRM = os.environ.get("LARI_WAKE_CONFIRM", "1").strip() != "0"
+WAKE_CONFIRM = _SETTINGS.wake_confirm
 # sherpa threshold = 0.05 + 0.4*sens; 0.5 -> 0.25 (upstream-recommended value)
-WAKE_SENSITIVITY = float(os.environ.get("LARI_SENSITIVITY", "0.5"))
-CONFIRM_FRAMES = int(os.environ.get("LARI_CONFIRM_FRAMES", "3"))
+WAKE_SENSITIVITY = _SETTINGS.wake_sensitivity
+CONFIRM_FRAMES = _SETTINGS.confirm_frames
 COOLDOWN_S = 2.0          # same constraint as Hermes between two wakes
-AMBIENT_PAUSE_S = float(os.environ.get("LARI_AMBIENT_PAUSE", "6"))  # pause after speech not addressed to us
+AMBIENT_PAUSE_S = _SETTINGS.ambient_pause_s  # pause after speech not addressed to us
 # The phone plays the reply through the same speaker the microphone uses:
 # without this mute, the system ends up transcribing itself.
-ECHO_MUTE_S = float(os.environ.get("LARI_ECHO_MUTE", "2.5"))
-FOLLOWUP_S = float(os.environ.get("LARI_FOLLOWUP_S", "30"))  # after audio playback
-PLAYBACK_ACK_TIMEOUT_S = float(os.environ.get("LARI_PLAYBACK_ACK_TIMEOUT", "45"))
+ECHO_MUTE_S = _SETTINGS.echo_mute_s
+FOLLOWUP_S = _SETTINGS.followup_s  # after audio playback
+PLAYBACK_ACK_TIMEOUT_S = _SETTINGS.playback_ack_timeout_s
 
 # Streaming voice responses are deliberately bounded.  The queue is small so a
 # slow browser/TTS provider applies back-pressure to SSE instead of allowing an
 # unbounded response to accumulate in memory.
-STREAM_TTS_QUEUE_MAX = int(os.environ.get("LARI_STREAM_TTS_QUEUE_MAX", "8"))
-STREAM_TEXT_MAX_CHARS = int(os.environ.get("LARI_STREAM_TEXT_MAX_CHARS", "4000"))
-STREAM_SENTENCE_MAX_CHARS = int(os.environ.get("LARI_STREAM_SENTENCE_MAX_CHARS", "280"))
+STREAM_TTS_QUEUE_MAX = _SETTINGS.stream_tts_queue_max
+STREAM_TEXT_MAX_CHARS = _SETTINGS.stream_text_max_chars
+STREAM_SENTENCE_MAX_CHARS = _SETTINGS.stream_sentence_max_chars
 
 # VAD: adaptive threshold. Minimum base threshold + multiple of the noise floor.
-VAD_MIN_RMS = float(os.environ.get("LARI_VAD_MIN_RMS", "900"))
-VAD_NOISE_MULT = float(os.environ.get("LARI_VAD_NOISE_MULT", "2.5"))
+VAD_MIN_RMS = _SETTINGS.vad_min_rms
+VAD_NOISE_MULT = _SETTINGS.vad_noise_mult
 # More tolerant of pauses while a request is being phrased; the VAD still
 # closes on silence, without waiting for the hard limit.
-SILENCE_END_S = float(os.environ.get("LARI_SILENCE_END", "2.5"))
+SILENCE_END_S = _SETTINGS.silence_end_s
 # Only a parachute against continuous noise / a stuck VAD, not a target utterance length.
-MAX_UTTERANCE_S = float(os.environ.get("LARI_MAX_UTTERANCE_S", "45"))
-MIN_SPEECH_S = float(os.environ.get("LARI_MIN_SPEECH_S", "0.7"))
-IDLE_ABORT_S = float(os.environ.get("LARI_IDLE_ABORT_S", "4.0"))
+MAX_UTTERANCE_S = _SETTINGS.max_utterance_s
+MIN_SPEECH_S = _SETTINGS.min_speech_s
+IDLE_ABORT_S = _SETTINGS.idle_abort_s
 
-AGENT_TIMEOUT_S = float(os.environ.get("LARI_AGENT_TIMEOUT", "180"))
-CLI_TIMEOUT_S = float(os.environ.get("LARI_CLI_TIMEOUT", "70"))
-os.environ.setdefault("HF_HUB_OFFLINE", "1")  # no revision check at every STT model load
+AGENT_TIMEOUT_S = _SETTINGS.agent_timeout_s
+CLI_TIMEOUT_S = _SETTINGS.cli_timeout_s
 
 log = logging.getLogger("lari")
 logging.basicConfig(
@@ -747,50 +703,6 @@ def _ask_cli(text: str) -> str:
     except Exception as exc:
         return f"(errore agente: {exc})"
 
-
-async def _post_chat(url: str, headers: dict, payload: dict, timeout: float) -> dict:
-    """POST JSON to a chat/completions endpoint (the single HTTP point for the
-    mocked test)."""
-    import httpx
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(url, headers=headers, json=payload)
-        r.raise_for_status()
-        return r.json()
-
-async def ask_deepseek(text: str) -> str:
-    """DeepSeek flash via direct API: ~1 s, no tools. The model has no
-    real-time data (weather, news): it says so instead of making it up."""
-    if not DEEPSEEK_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY non impostata")
-    system = (VOICE_SYSTEM +
-              " Non hai strumenti e non hai dati in tempo reale (meteo, notizie, "
-              "corsi): se la richiesta li richiede, dillo in una riga invece di "
-              "inventare la risposta.")
-    payload = {
-        "model": DEEPSEEK_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": text},
-        ],
-        "stream": False,
-    }
-    headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}",
-               "Content-Type": "application/json"}
-    data = await _post_chat(f"{DEEPSEEK_API}/chat/completions", headers,
-                            payload, DEEPSEEK_TIMEOUT_S)
-    return (data["choices"][0]["message"]["content"] or "").strip()
-
-async def ask(text: str, session_id: str | None = None) -> str:
-    """Voice agent dispatch: DeepSeek flash by default (fast), with automatic
-    fallback to the full Hermes agent if it fails or backend=hermes."""
-    if AGENT_BACKEND == "deepseek":
-        try:
-            return await ask_deepseek(text)
-        except Exception as exc:
-            log.warning("DeepSeek non disponibile (%s), fallback agente Hermes", exc)
-    if session_id is None:
-        return await ask_hermes(text)
-    return await ask_hermes(text, session_id=session_id)
 
 # ─── wake engine ─────────────────────────────────────────────────────────────
 def make_engine():
@@ -1370,68 +1282,22 @@ class Session:
             await self.send_json({"type": "transcript", "text": text, "turn": turn})
 
         await self.set_state("thinking", turn=turn)
-        if AGENT_BACKEND == "hermes":
-            stream_had_audio = False
-            try:
-                reply, stream_had_audio, tts_failed = await self._stream_hermes_speak(text, turn)
-            except HermesStreamTurnError as exc:
-                # The stream may already have run tools or emitted audio.  Never
-                # reissue this turn through ask_hermes; surface only a safe error.
-                log.warning("turno %d: %s", turn, exc)
-                reply = "Non riesco a completare la risposta."
-                tts_failed = False
-                stream_had_audio = exc.had_audio
-            except Exception:
-                log.exception("stream Hermes fallito")
-                reply = "Non riesco a completare la risposta."
-                tts_failed = False
-            await self.send_json({"type": "reply", "text": reply, "turn": turn})
-            if stream_had_audio:
-                playback = await self._wait_for_playback(turn)
-                if playback == "completed":
-                    await self.set_state("listening", turn=turn)
-                elif playback == "failed":
-                    await self.set_state("listening", turn=turn, error="playback fallito")
-                else:
-                    await self.set_state("listening", turn=turn, error="playback timeout")
-            elif tts_failed:
-                await self.set_state("listening", turn=turn, error="tts non disponibile")
-            elif reply:
-                # A successful stream with no usable MP3 is safe to handle with
-                # the old single-response TTS path: Hermes is not called again.
-                await self._speak(reply, turn)
-                if self.awaiting_playback:
-                    playback = await self._wait_for_playback(turn)
-                    if playback == "completed":
-                        await self.set_state("listening", turn=turn)
-                    elif playback == "failed":
-                        await self.set_state("listening", turn=turn, error="playback fallito")
-                    else:
-                        await self.set_state("listening", turn=turn, error="playback timeout")
-                else:
-                    await self.set_state("listening", turn=turn)
-            else:
-                await self.set_state("listening", turn=turn)
-            self._record_usage()
-            log.info("turno %d completato in %.1fs", turn, time.time() - t_turn)
-            return
-
-        # Non-streaming backends retain the legacy single MP3 protocol.
+        stream_had_audio = False
         try:
-            reply = await self._ask_hermes(text)
-        except HermesContinuationError:
-            log.warning("turno %d: continuità Hermes non disponibile", turn)
-            reply = "Non riesco a continuare questa conversazione."
-        except Exception as exc:
-            log.exception("agente fallito")
-            reply = f"Non sono riuscito a contattare l'agente: {exc}"
+            reply, stream_had_audio, tts_failed = await self._stream_hermes_speak(text, turn)
+        except HermesStreamTurnError as exc:
+            # The stream may already have run tools or emitted audio.  Never
+            # reissue this turn through ask_hermes; surface only a safe error.
+            log.warning("turno %d: %s", turn, exc)
+            reply = "Non riesco a completare la risposta."
+            tts_failed = False
+            stream_had_audio = exc.had_audio
+        except Exception:
+            log.exception("stream Hermes fallito")
+            reply = "Non riesco a completare la risposta."
+            tts_failed = False
         await self.send_json({"type": "reply", "text": reply, "turn": turn})
-        if not reply:
-            await self.set_state("listening", turn=turn)
-            return
-
-        await self._speak(reply, turn)
-        if self.awaiting_playback:
+        if stream_had_audio:
             playback = await self._wait_for_playback(turn)
             if playback == "completed":
                 await self.set_state("listening", turn=turn)
@@ -1439,9 +1305,27 @@ class Session:
                 await self.set_state("listening", turn=turn, error="playback fallito")
             else:
                 await self.set_state("listening", turn=turn, error="playback timeout")
+        elif tts_failed:
+            await self.set_state("listening", turn=turn, error="tts non disponibile")
+        elif reply:
+            # A successful stream with no usable MP3 is safe to handle with
+            # the old single-response TTS path: Hermes is not called again.
+            await self._speak(reply, turn)
+            if self.awaiting_playback:
+                playback = await self._wait_for_playback(turn)
+                if playback == "completed":
+                    await self.set_state("listening", turn=turn)
+                elif playback == "failed":
+                    await self.set_state("listening", turn=turn, error="playback fallito")
+                else:
+                    await self.set_state("listening", turn=turn, error="playback timeout")
+            else:
+                await self.set_state("listening", turn=turn)
         else:
             await self.set_state("listening", turn=turn)
+        self._record_usage()
         log.info("turno %d completato in %.1fs", turn, time.time() - t_turn)
+        return
 
     async def _speak(self, text: str, turn: int):
         """TTS -> audio to the client; on error log and return to listening."""
@@ -1704,8 +1588,7 @@ async def usage_summary(token: str):
     """Monthly usage summary: turns, paid realtime seconds, local turns."""
     if not TOKEN or token != TOKEN:
         return Response(content="Forbidden", status_code=403)
-    rate_env = os.environ.get("LARI_USAGE_EUR_PER_MIN", "").strip()
-    rate = float(rate_env) if rate_env else None
+    rate = _SETTINGS.usage_eur_per_min
     summary = USAGE_LEDGER.month_summary(time.strftime("%Y-%m"), eur_per_min=rate)
     return Response(content=json.dumps(summary), media_type="application/json")
 

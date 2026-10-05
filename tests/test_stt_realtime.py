@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 
 from lari import stt_backends
+from lari.config import load_settings
 
 
 def _reserve_budget_in_process(path, barrier, results):
@@ -48,6 +49,11 @@ class FakeWebSocket:
 
 
 class RealtimeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
+        settings.start()
+        self.addCleanup(settings.stop)
+
     async def test_success_sends_pcm_partial_and_one_commit(self):
         fake = FakeWebSocket([
             {"message_type": "session_started"},

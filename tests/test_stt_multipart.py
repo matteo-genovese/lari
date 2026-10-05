@@ -12,11 +12,17 @@ import httpx
 import numpy as np
 
 from lari import stt_backends
+from lari.config import load_settings
 
 PCM = np.arange(3200, dtype=np.int16)
 
 
 class MultipartEncodingTests(unittest.TestCase):
+    def setUp(self):
+        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def _run(self, backend, response_json):
         captured = {}
 

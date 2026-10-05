@@ -28,7 +28,7 @@ from typing import Awaitable, Callable
 import numpy as np
 import websockets
 
-from . import wake_config
+from .config import Settings, get_settings
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ KEY_ENV = {
 # Wake-derived ASR bias terms: keyterms, style prompt and the realtime URL all
 # derive from the configured wake phrase plus the optional LARI_STT_KEYTERMS
 # vocabulary (names and places the ASR misrenders).
-_WAKE = wake_config.from_env()
+_WAKE = get_settings().wake_config
 # ElevenLabs batch keyterms (<= 5 words each, <= 1000 total). Scribe v2 with
 # keyterms costs +20% over the base rate.
 KEYTERMS = list(_WAKE.batch_keyterms)
@@ -84,11 +84,11 @@ class DailyAudioBudget:
     """
 
     def __init__(self, path: str | Path | None = None,
-                 daily_seconds: float | None = None):
-        default_path = Path(__file__).resolve().parent.parent / ".realtime_stt_usage.json"
-        self.path = Path(path or os.environ.get("LARI_REALTIME_USAGE_FILE", default_path))
+                 daily_seconds: float | None = None, *, settings: Settings | None = None):
+        settings = settings or get_settings()
+        self.path = Path(path or settings.realtime_usage_file)
         self.daily_seconds = float(
-            os.environ.get("LARI_REALTIME_DAILY_SECONDS", REALTIME_DAILY_SECONDS)
+            settings.realtime_daily_seconds
             if daily_seconds is None else daily_seconds
         )
         self._lock = threading.Lock()
@@ -226,8 +226,10 @@ class RealtimeScribe:
         self._commit_sent = False
 
     @classmethod
-    async def connect(cls, on_partial=None, budget: DailyAudioBudget | None = None):
-        key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    async def connect(cls, on_partial=None, budget: DailyAudioBudget | None = None,
+                      *, settings: Settings | None = None):
+        settings = settings or get_settings()
+        key = settings.elevenlabs_api_key
         if not key:
             raise RealtimeUnavailable("ELEVENLABS_API_KEY non impostata")
         budget = budget or realtime_daily_budget()
@@ -412,12 +414,13 @@ def _post_multipart(url: str, headers: dict, data_tuples: list,
         return response.json()
 
 
-def transcribe(pcm: np.ndarray, backend: str) -> str:
+def transcribe(pcm: np.ndarray, backend: str, *, settings: Settings | None = None) -> str:
     pcm = np.asarray(pcm, dtype=np.int16)
     if backend not in BACKENDS:
         raise ValueError(f"backend STT cloud sconosciuto: {backend}")
     key_env = KEY_ENV[backend]
-    key = os.environ.get(key_env, "").strip()
+    settings = settings or get_settings()
+    key = getattr(settings, key_env.lower())
     if not key:
         raise RuntimeError(f"{key_env} non impostata: aggiungila in desk-buddy/.env")
 
@@ -440,7 +443,7 @@ def transcribe(pcm: np.ndarray, backend: str) -> str:
         call = dict(
             url="https://api.groq.com/openai/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {key}"},
-            data_tuples=[("model", os.environ.get("LARI_GROQ_MODEL", "whisper-large-v3")),
+            data_tuples=[("model", settings.groq_model),
                          ("language", "it"),
                          ("prompt", STYLE_PROMPT),
                          ("response_format", "json")],

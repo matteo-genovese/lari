@@ -10,6 +10,7 @@ from unittest.mock import patch
 import numpy as np
 
 from lari import stt_backends
+from lari.config import load_settings
 
 PCM = np.arange(3200, dtype=np.int16)  # 0.2 s of 16 kHz mono
 
@@ -22,6 +23,11 @@ def fake_post(payload):
 
 
 class ElevenLabsTests(unittest.TestCase):
+    def setUp(self):
+        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def test_posts_scribe_v2_with_raw_pcm_keyterms_and_parses_text(self):
         fake_post.captured = None
         with patch.dict(os.environ, {'ELEVENLABS_API_KEY': 'k-el'}), \
@@ -42,6 +48,11 @@ class ElevenLabsTests(unittest.TestCase):
 
 
 class GroqTests(unittest.TestCase):
+    def setUp(self):
+        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def test_posts_whisper_turbo_with_prompt_and_parses_text(self):
         fake_post.captured = None
         with patch.dict(os.environ, {'GROQ_API_KEY': 'k-gq'}), \
@@ -60,6 +71,11 @@ class GroqTests(unittest.TestCase):
 
 
 class OpenAITests(unittest.TestCase):
+    def setUp(self):
+        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def test_posts_whisper1_and_parses_text(self):
         fake_post.captured = None
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'k-oa'}), \
@@ -75,6 +91,11 @@ class OpenAITests(unittest.TestCase):
 
 
 class FailureTests(unittest.TestCase):
+    def setUp(self):
+        settings = patch.object(stt_backends, "get_settings", side_effect=load_settings)
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def test_missing_key_fails_before_any_http(self):
         fake_post.captured = None
         with patch.dict(os.environ, {}, clear=True), \

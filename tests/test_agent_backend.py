@@ -1,8 +1,4 @@
-"""Voice agent dispatch: DeepSeek flash by default, full Hermes agent as fallback.
-
-DeepSeek flash uses the direct API (no tools, low latency); the Hermes
-agent has complete tools but is slower.
-"""
+"""Hermes requests, session continuity, streaming and approvals."""
 import asyncio
 import json
 import unittest
@@ -11,34 +7,6 @@ import httpx
 
 from lari import server
 from lari.server import Session
-
-
-class DeepSeekDirectTests(unittest.TestCase):
-    def test_posts_chat_completions_with_voice_system(self):
-        fake = AsyncMock(return_value={'choices': [{'message': {'content': ' Ciao! '}}]})
-        with patch.object(server, '_post_chat', fake), \
-             patch.object(server, 'DEEPSEEK_KEY', 'k-ds'), \
-             patch.object(server, 'DEEPSEEK_API', 'https://api.deepseek.com'), \
-             patch.object(server, 'DEEPSEEK_MODEL', 'deepseek-flash'):
-            out = asyncio.run(server.ask_deepseek('ciao'))
-        self.assertEqual(out, 'Ciao!')
-        url, headers, payload, _timeout = fake.call_args.args
-        self.assertEqual(url, 'https://api.deepseek.com/chat/completions')
-        self.assertEqual(headers['Authorization'], 'Bearer k-ds')
-        self.assertEqual(payload['model'], 'deepseek-flash')
-        self.assertEqual(payload['stream'], False)
-        self.assertEqual(payload['messages'][0]['role'], 'system')
-        self.assertTrue(payload['messages'][0]['content'].startswith(server.VOICE_SYSTEM))
-        self.assertIn('tempo reale', payload['messages'][0]['content'])  # onestà su no-tool
-        self.assertEqual(payload['messages'][1], {'role': 'user', 'content': 'ciao'})
-
-    def test_missing_key_raises_before_any_http(self):
-        fake = AsyncMock()
-        with patch.object(server, '_post_chat', fake), \
-             patch.object(server, 'DEEPSEEK_KEY', ''):
-            with self.assertRaises(RuntimeError):
-                asyncio.run(server.ask_deepseek('ciao'))
-        fake.assert_not_called()
 
 
 class AgentDispatchTests(unittest.TestCase):
@@ -61,36 +29,6 @@ class AgentDispatchTests(unittest.TestCase):
         self.assertEqual((body['provider'], body['model']), ('deepseek', 'deepseek-flash'))
         self.assertEqual(body['model_options']['reasoning'], {'enabled': False})
         self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], server.SESSION_KEY)
-
-    def test_dispatch_prefers_deepseek(self):
-        ds = AsyncMock(return_value='ok')
-        hm = AsyncMock(side_effect=AssertionError('hermes non deve girare'))
-        with patch.object(server, 'AGENT_BACKEND', 'deepseek'), \
-             patch.object(server, 'ask_deepseek', ds), \
-             patch.object(server, 'ask_hermes', hm):
-            out = asyncio.run(server.ask('ciao'))
-        self.assertEqual(out, 'ok')
-        ds.assert_awaited_once_with('ciao')
-
-    def test_dispatch_falls_back_to_hermes_on_error(self):
-        ds = AsyncMock(side_effect=RuntimeError('deepseek down'))
-        hm = AsyncMock(return_value='da hermes')
-        with patch.object(server, 'AGENT_BACKEND', 'deepseek'), \
-             patch.object(server, 'ask_deepseek', ds), \
-             patch.object(server, 'ask_hermes', hm):
-            out = asyncio.run(server.ask('ciao'))
-        self.assertEqual(out, 'da hermes')
-        hm.assert_awaited_once_with('ciao')
-
-    def test_hermes_backend_keeps_full_agent(self):
-        ds = AsyncMock(side_effect=AssertionError('deepseek non deve girare'))
-        hm = AsyncMock(return_value='con tool')
-        with patch.object(server, 'AGENT_BACKEND', 'hermes'), \
-             patch.object(server, 'ask_deepseek', ds), \
-             patch.object(server, 'ask_hermes', hm):
-            out = asyncio.run(server.ask('ciao'))
-        self.assertEqual(out, 'con tool')
-        hm.assert_awaited_once_with('ciao')
 
     def test_session_continuity_uses_response_id_on_next_turn(self):
         requests = []
