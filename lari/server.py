@@ -19,12 +19,14 @@ import tempfile
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 
+from . import hermes
 from . import stt_backends
 from . import wake_config
 from .config import get_settings
@@ -69,31 +71,9 @@ USAGE_LEDGER = usage.UsageLedger()
 VOICE_SYSTEM = _SETTINGS.voice_system
 
 
-class HermesContinuationError(RuntimeError):
-    """A continued Hermes turn failed without switching transcripts."""
-
-
-class HermesStreamTurnError(RuntimeError):
-    """A streamed turn failed; the turn must never be submitted again."""
-
-    def __init__(self, message: str, had_audio: bool = False):
-        super().__init__(message)
-        self.had_audio = had_audio
-
-
-class HermesReply(str):
-    """String-compatible Hermes reply carrying the response session id."""
-
-    def __new__(
-        cls,
-        text: str,
-        session_id: str | None = None,
-        run_id: str | None = None,
-    ):
-        reply = super().__new__(cls, text)
-        reply.session_id = session_id
-        reply.run_id = run_id
-        return reply
+HermesReply = hermes.HermesReply  # TEMP-P5: alias del refactor, da rimuovere
+HermesStreamTurnError = hermes.HermesStreamTurnError  # TEMP-P5: alias del refactor, da rimuovere
+HermesContinuationError = hermes.HermesContinuationError  # TEMP-P5: alias del refactor, da rimuovere
 
 
 TTS_VOICE = _SETTINGS.tts_voice
@@ -486,222 +466,40 @@ class SpeakableSentenceBuffer:
         return sentences
 
 
+def _hermes_settings():
+    # TEMP-P5: preserve patches of the legacy server configuration until P5.
+    return replace(
+        _SETTINGS, hermes_root=HERMES_ROOT, hermes_api=HERMES_API,
+        hermes_key=HERMES_KEY, session_key=SESSION_KEY,
+        hermes_provider=HERMES_PROVIDER, hermes_model=HERMES_MODEL,
+        voice_system=VOICE_SYSTEM, agent_timeout_s=AGENT_TIMEOUT_S,
+        cli_timeout_s=CLI_TIMEOUT_S,
+    )
+
+
+# TEMP-P5: alias del refactor, da rimuovere
 async def ask_hermes(text: str, session_id: str | None = None) -> HermesReply:
-    """Send the utterance to the agent, continuing ``session_id`` when present.
-
-    The return value remains string-compatible for existing callers and carries the
-    response's ``X-Hermes-Session-Id`` as ``.session_id``.
-    """
-    import httpx
-
-    payload = {
-        "model": HERMES_MODEL,
-        "provider": HERMES_PROVIDER,
-        "model_options": {"reasoning": {"enabled": False}},
-        "messages": [
-            {"role": "system", "content": VOICE_SYSTEM},
-            {"role": "user", "content": text},
-        ],
-        "stream": False,
-    }
-    headers = {"Content-Type": "application/json"}
-    if HERMES_KEY:
-        headers["Authorization"] = f"Bearer {HERMES_KEY}"
-    headers["X-Hermes-Session-Key"] = SESSION_KEY
-    if session_id:
-        headers["X-Hermes-Session-Id"] = session_id
-
-    try:
-        async with httpx.AsyncClient(timeout=AGENT_TIMEOUT_S) as client:
-            r = await client.post(f"{HERMES_API}/v1/chat/completions", json=payload, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            reply = (data["choices"][0]["message"]["content"] or "").strip()
-            return HermesReply(reply, r.headers.get("X-Hermes-Session-Id"))
-    except Exception as exc:  # API server down -> CLI fallback
-        if session_id:
-            # A CLI continuation has different state semantics. Keep the explicit
-            # transcript id private to this WebSocket and surface a concise error.
-            log.warning("continuità Hermes fallita (%s)", type(exc).__name__)
-            raise HermesContinuationError("continuazione Hermes non disponibile") from None
-        log.warning("API server non raggiungibile (%s), fallback hermes chat -q", type(exc).__name__)
-        loop = asyncio.get_running_loop()
-        return HermesReply(await loop.run_in_executor(None, _ask_cli, text))
+    return await hermes.ask_hermes(
+        text, _hermes_settings(), session_id=session_id, cli_fallback=_ask_cli,
+    )
 
 
+# TEMP-P5: alias del refactor, da rimuovere
 async def stream_hermes(
     text: str,
     session_id: str | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     on_approval: Callable[[dict], Awaitable[None]] | None = None,
 ) -> HermesReply:
-    """Stream one opt-in Hermes turn over SSE.
-
-    Only ``delta.content`` is speech. Reasoning, tool/status events, and approval
-    metadata are kept out of the returned text. The response session/run ids are
-    published only after the terminal ``[DONE]`` frame, so callers can retain
-    their previous transcript on any failed or incomplete stream.
-    """
-    import httpx
-
-    payload = {
-        "model": HERMES_MODEL,
-        "provider": HERMES_PROVIDER,
-        "model_options": {"reasoning": {"enabled": False}},
-        "messages": [
-            {"role": "system", "content": VOICE_SYSTEM},
-            {"role": "user", "content": text},
-        ],
-        "stream": True,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-        "X-Hermes-Session-Key": SESSION_KEY,
-    }
-    if HERMES_KEY:
-        headers["Authorization"] = f"Bearer {HERMES_KEY}"
-    if session_id:
-        headers["X-Hermes-Session-Id"] = session_id
-
-    content: list[str] = []
-    response_session_id: str | None = None
-    run_id: str | None = None
-    done = False
-    saw_stop_finish = False
-
-    def find_run_id(value: object) -> str | None:
-        if isinstance(value, dict):
-            candidate = value.get("run_id")
-            if isinstance(candidate, str) and candidate:
-                return candidate
-            for nested in value.values():
-                found = find_run_id(nested)
-                if found:
-                    return found
-        elif isinstance(value, list):
-            for nested in value:
-                found = find_run_id(nested)
-                if found:
-                    return found
-        return None
-
-    async def handle_event(event_name: str | None, data: str) -> None:
-        nonlocal done, run_id, saw_stop_finish
-        if not data:
-            return
-        if data == "[DONE]":
-            done = True
-            return
-
-        try:
-            event = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("stream Hermes non valido: JSON SSE corrotto") from exc
-
-        event_run_id = find_run_id(event)
-        if event_run_id:
-            run_id = event_run_id
-
-        if event_name == "approval.request":
-            if on_approval is not None:
-                await on_approval(event)
-            return
-        if event_name in {"hermes.tool.progress", "hermes.status"}:
-            return
-
-        choices = event.get("choices") if isinstance(event, dict) else None
-        if not isinstance(choices, list) or not choices:
-            return
-        choice = choices[0]
-        if not isinstance(choice, dict):
-            return
-        finish_reason = choice.get("finish_reason")
-        if finish_reason is not None:
-            if not isinstance(finish_reason, str) or finish_reason.lower() != "stop":
-                if finish_reason == "error":
-                    raise RuntimeError("Hermes stream terminato con errore")
-                raise RuntimeError(
-                    f"Hermes stream terminato con finish_reason={finish_reason!r}"
-                )
-            saw_stop_finish = True
-
-        delta = choice.get("delta")
-        delta_content = delta.get("content") if isinstance(delta, dict) else None
-        if isinstance(delta_content, str):
-            content.append(delta_content)
-            if on_delta is not None:
-                await on_delta(delta_content)
-
-    try:
-        async with httpx.AsyncClient(timeout=AGENT_TIMEOUT_S) as client:
-            async with client.stream(
-                "POST",
-                f"{HERMES_API}/v1/chat/completions",
-                json=payload,
-                headers=headers,
-            ) as response:
-                response.raise_for_status()
-                response_session_id = response.headers.get("X-Hermes-Session-Id")
-
-                event_name: str | None = None
-                data_lines: list[str] = []
-                async for line in response.aiter_lines():
-                    if line == "":
-                        if data_lines:
-                            await handle_event(event_name, "\n".join(data_lines))
-                        event_name = None
-                        data_lines = []
-                        continue
-                    if line.startswith(":"):
-                        continue
-                    field, separator, value = line.partition(":")
-                    if separator and value.startswith(" "):
-                        value = value[1:]
-                    if field == "event":
-                        event_name = value
-                    elif field == "data":
-                        data_lines.append(value)
-
-                # A final event without a blank line is still parsed, but cannot
-                # satisfy the terminal [DONE] requirement by itself.
-                if data_lines:
-                    await handle_event(event_name, "\n".join(data_lines))
-    except Exception:
-        # Deliberately no retry: Hermes tool calls/approvals may already have had
-        # side effects before a transport or stream-level failure was observed.
-        raise
-
-    if not done:
-        raise RuntimeError("stream Hermes incompleto: manca [DONE]")
-    if not saw_stop_finish:
-        raise RuntimeError("stream Hermes incompleto: manca finish_reason='stop'")
-    return HermesReply("".join(content).strip(), response_session_id, run_id)
+    return await hermes.stream_hermes(
+        text, _hermes_settings(), session_id=session_id,
+        on_delta=on_delta, on_approval=on_approval,
+    )
 
 
+# TEMP-P5: alias del refactor, da rimuovere
 def _ask_cli(text: str) -> str:
-    """Fallback without the API server. stdin=DEVNULL: an approval prompt must
-    fail immediately instead of hanging while waiting for a tty that does not exist."""
-    import subprocess as sp
-
-    t0 = time.time()
-    try:
-        p = sp.run(
-            [str(HERMES_ROOT / "venv/bin/hermes"), "chat", "-q", text, "-Q",
-             "-m", HERMES_MODEL, "--provider", HERMES_PROVIDER, "--reasoning", "none",
-             "--continue", SESSION_KEY, "--create-if-missing"],
-            capture_output=True, text=True, timeout=CLI_TIMEOUT_S, cwd=str(HERMES_ROOT),
-            stdin=sp.DEVNULL,
-        )
-        out = (p.stdout or "").strip()
-        dt = time.time() - t0
-        log.info("fallback CLI: %.1fs exit=%s out=%r", dt, p.returncode, out[:120])
-        return out or f"(nessuna risposta, exit={p.returncode}: {(p.stderr or '').strip()[:200]})"
-    except sp.TimeoutExpired:
-        log.error("fallback CLI: timeout dopo %.0fs", CLI_TIMEOUT_S)
-        return "(il backend è lento: fai girare l'API server riavviando il gateway)"
-    except Exception as exc:
-        return f"(errore agente: {exc})"
+    return hermes._ask_cli(text, _hermes_settings())
 
 
 # ─── wake engine ─────────────────────────────────────────────────────────────
@@ -1001,9 +799,9 @@ class Session:
         if stream_error is not None:
             raise HermesStreamTurnError("stream Hermes non disponibile", started) from None
 
-        # HermesReply publishes its session id only after [DONE].  Do not touch
+        # HermesReply publishes its session id only after completion. Do not touch
         # the WebSocket transcript id before this point, including when TTS
-        # fails after the SSE itself completed.
+        # fails after the Hermes turn itself completed.
         returned_id = getattr(result, "session_id", None)
         if returned_id:
             self.hermes_session_id = returned_id
