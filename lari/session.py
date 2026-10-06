@@ -11,13 +11,18 @@ from .config import Settings
 from .audio import SessionAudio, save_turn_audio
 from .wake.runtime import WakeWorker
 from .stt import dispatch as _dispatch
-from .hermes import ask_hermes, stream_hermes, HermesStreamTurnError
+from .hermes import (
+    ApprovalNotAvailable, HermesStreamStalled, HermesStreamTurnError,
+    ask_hermes, stream_hermes,
+)
 from .tts import Reading, TTSUnavailable
 from . import usage
 log = logging.getLogger("lari")
 SAMPLE_RATE = 16000
 COOLDOWN_S = 2.0
 MANUAL_PREROLL_S = 0.6
+APPROVAL_NOT_AVAILABLE_REPLY = "Questa richiesta ha bisogno di un'approvazione che non posso darti a voce. Riprova da Telegram."
+AGENT_STALLED_REPLY = "Ci sto mettendo troppo: non riesco a completare la risposta."
 
 class Session(SessionAudio, WakeWorker):
     """One satellite owns turns, playback, realtime, follow-up and UI state.
@@ -328,8 +333,10 @@ class Session(SessionAudio, WakeWorker):
         stream_error = None
 
         async def on_approval(event):
+            log.warning("turno %d: approvazione non disponibile nel canale vocale", turn)
             if self._reading_valid(turn):
                 await self.send_json(protocol.approval(turn=turn, approval=event))
+            raise ApprovalNotAvailable()
 
         try:
             try:
@@ -347,6 +354,8 @@ class Session(SessionAudio, WakeWorker):
             if self._reading is reading:
                 self._reading = None
         if stream_error is not None:
+            if isinstance(stream_error, (ApprovalNotAvailable, HermesStreamStalled)):
+                raise stream_error
             raise HermesStreamTurnError("stream Hermes non disponibile", reading.started) from None
         if self._reading_valid(turn):
             returned_id = getattr(result, "session_id", None)
@@ -528,6 +537,13 @@ class Session(SessionAudio, WakeWorker):
         stream_had_audio = False
         try:
             reply, stream_had_audio, tts_failed = await self._stream_hermes_speak(text, turn)
+        except ApprovalNotAvailable:
+            reply = APPROVAL_NOT_AVAILABLE_REPLY
+            tts_failed = False
+        except HermesStreamStalled:
+            log.warning("turno %d: stream Hermes in stallo", turn)
+            reply = AGENT_STALLED_REPLY
+            tts_failed = False
         except HermesStreamTurnError as exc:
             # The stream may already have run tools or emitted audio.  Never
             # reissue this turn through ask_hermes; surface only a safe error.
@@ -605,4 +621,3 @@ class Session(SessionAudio, WakeWorker):
             log.exception("impossibile registrare l'usage")
         finally:
             self._turn_paid_s = 0.0
-

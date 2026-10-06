@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from lari.session import Session
 from lari import session as sessions, tts as voice
-from lari.hermes import HermesReply
+from lari.hermes import ApprovalNotAvailable, HermesReply
 from lari.stt import realtime as live
 from lari.stt.realtime import RealtimeScribe
 
@@ -267,7 +267,8 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             return HermesReply("Obsoleto.", "old-id")
         with patch.object(sessions, "stream_hermes", side_effect=stream), \
              patch.object(voice, "tts", new_callable=AsyncMock) as synth:
-            await session._stream_hermes_speak("vecchio", 11)
+            with self.assertRaises(ApprovalNotAvailable):
+                await session._stream_hermes_speak("vecchio", 11)
             await session._send_partial("vecchio", 11)
             await session.set_state("thinking", turn=11)
         self.assertEqual(session.hermes_session_id, "current")

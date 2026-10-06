@@ -12,7 +12,7 @@ from functools import partial
 
 from ..config import Settings
 from .events import (
-    HermesApprovalRequest, HermesReply, HermesSSEState, HermesTextDelta,
+    HermesApprovalRequest, HermesReply, HermesSSEState, HermesStatus, HermesTextDelta,
     parse_hermes_lines,
 )
 
@@ -29,6 +29,10 @@ def _model_overrides(settings: Settings) -> dict:
 
 class HermesContinuationError(RuntimeError):
     """A continued Hermes turn failed without switching transcripts."""
+
+
+class HermesStreamStalled(Exception):
+    """The stream stopped producing semantic events."""
 
 
 class HermesStreamTurnError(RuntimeError):
@@ -130,9 +134,13 @@ async def stream_hermes(
     state = HermesSSEState()
     response_session_id: str | None = None
     stream_opened = False
+    last_semantic_event = time.monotonic()
 
     async def dispatch(events):
+        nonlocal last_semantic_event
         for event in events:
+            if isinstance(event, (HermesTextDelta, HermesStatus, HermesApprovalRequest)):
+                last_semantic_event = time.monotonic()
             if isinstance(event, HermesTextDelta) and on_delta is not None:
                 await on_delta(event.text)
             elif isinstance(event, HermesApprovalRequest) and on_approval is not None:
@@ -149,8 +157,21 @@ async def stream_hermes(
                 stream_opened = True
                 response.raise_for_status()
                 response_session_id = response.headers.get("X-Hermes-Session-Id")
+                last_semantic_event = time.monotonic()
 
-                async for line in response.aiter_lines():
+                lines = response.aiter_lines().__aiter__()
+                while True:
+                    remaining = settings.agent_stall_s - (time.monotonic() - last_semantic_event)
+                    if remaining <= 0:
+                        raise HermesStreamStalled("stream Hermes in stallo")
+                    try:
+                        line = await asyncio.wait_for(anext(lines), timeout=remaining)
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        # Unwinding both context managers closes SSE before the
+                        # caller handles the stall; this turn is never retried.
+                        raise HermesStreamStalled("stream Hermes in stallo") from None
                     state, events = parse_hermes_lines((line,), state, final=False)
                     await dispatch(events)
 

@@ -29,6 +29,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.usage_ledger, root / "usage.json")
         self.assertEqual(settings.realtime_usage_file, root / ".realtime_stt_usage.json")
         self.assertEqual(settings.realtime_daily_seconds, 600.0)
+        self.assertEqual(settings.agent_stall_s, 120.0)
         self.assertEqual(settings.stt_backend, "whisper")
         self.assertEqual(settings.stt_model, "base")
         self.assertEqual(settings.hermes_provider, "")
@@ -67,6 +68,7 @@ class SettingsTests(unittest.TestCase):
             "LARI_STREAM_SENTENCE_MAX_CHARS": ("0",),
             "LARI_SENSITIVITY": ("-0.1", "1.1"),
             "LARI_AGENT_TIMEOUT": ("0", "nan", "inf"),
+            "LARI_AGENT_STALL_S": ("0", "-1", "nan", "inf"),
             "LARI_CLI_TIMEOUT": ("-1",),
             "LARI_VAD_MIN_RMS": ("-1",),
             "LARI_REALTIME_DAILY_SECONDS": ("nan", "-1"),

@@ -64,6 +64,7 @@ class Settings:
     min_speech_s: float
     idle_abort_s: float
     agent_timeout_s: float
+    agent_stall_s: float
     cli_timeout_s: float
     elevenlabs_api_key: str = field(repr=False)
     groq_api_key: str = field(repr=False)
@@ -165,6 +166,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         min_speech_s=_number(env, 'LARI_MIN_SPEECH_S', '0.7', float),
         idle_abort_s=_number(env, 'LARI_IDLE_ABORT_S', '4.0', float, positive=True),
         agent_timeout_s=_number(env, 'LARI_AGENT_TIMEOUT', '180', float, positive=True),
+        agent_stall_s=_number(env, 'LARI_AGENT_STALL_S', '120.0', float, positive=True),
         cli_timeout_s=_number(env, 'LARI_CLI_TIMEOUT', '70', float, positive=True),
         elevenlabs_api_key=env.get("ELEVENLABS_API_KEY", "").strip(),
         groq_api_key=env.get("GROQ_API_KEY", "").strip(),

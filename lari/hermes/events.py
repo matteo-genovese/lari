@@ -6,6 +6,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 
+class ApprovalNotAvailable(Exception):
+    """The voice channel cannot answer a command approval request."""
+
+
 @dataclass(frozen=True)
 class HermesTextDelta:
     text: str

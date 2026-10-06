@@ -131,6 +131,8 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 - `LARI_HERMES_ROOT`: Hermes source/install tree used only by the optional features that need it (defaults to `~/.hermes/hermes-agent`).
 - `LARI_HERMES_PROVIDER`, `LARI_HERMES_MODEL`: leave empty to follow the Hermes profile's default model/provider; set non-empty values to request per-satellite overrides.
 - `LARI_SESSION_KEY`: names the Hermes conversation carried by the satellite (default `lari`); changing its value starts a fresh memory.
+- `LARI_AGENT_TIMEOUT`: Hermes HTTP timeout in seconds (default `180`).
+- `LARI_AGENT_STALL_S`: maximum wait without text, tool/status or approval events (default `120.0` seconds); SSE keepalives do not reset it. A stall ends the turn with a spoken explanation. Approval requests are forwarded to the browser for observability, then the stream closes and Lari asks you to retry from Telegram; voice cannot approve commands.
 - `LARI_STT_BACKEND`: `whisper` (local faster-whisper, default), `vosk` (local Vosk), `elevenlabs_realtime` (streaming cloud), or a batch provider: `elevenlabs`, `groq`, `openai`. Cloud backends need their matching key (`ELEVENLABS_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`); local backends need none.
 - `LARI_STT_MODEL`, `LARI_STT_LANG`: local fallback model and language.
 - `LARI_VOSK_MODEL_DIR`: extracted Vosk model directory; must contain `am/final.mdl`.

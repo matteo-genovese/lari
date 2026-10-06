@@ -491,6 +491,131 @@ class HermesStreamingTests(unittest.TestCase):
         self.assertEqual(calls[0].headers['X-Hermes-Session-Id'], 'prior-id')
 
 
+class BoundedTurnTests(unittest.IsolatedAsyncioTestCase):
+    async def run_stream_turn(self, frames, expected_reply, *, hold_open=False,
+                              keepalives=False, delay=0):
+        settings = load_settings({'LARI_AGENT_STALL_S': '0.2'})
+        requests = []
+        closed = asyncio.Event()
+        finalized = asyncio.Event()
+        sent = []
+        audio = []
+
+        class Stream(httpx.AsyncByteStream):
+            def __aiter__(self):
+                self.iterator = self.iter_frames()
+                return self.iterator
+
+            async def iter_frames(self):
+                try:
+                    for frame in frames:
+                        if delay:
+                            await asyncio.sleep(delay)
+                        yield frame.encode()
+                    if keepalives:
+                        while True:
+                            await asyncio.sleep(0.02)
+                            yield b': keepalive\n\n'
+                    if hold_open:
+                        await asyncio.Event().wait()
+                finally:
+                    finalized.set()
+
+            async def aclose(self):
+                await self.iterator.aclose()
+                closed.set()
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, stream=Stream(),
+                                  headers={'X-Hermes-Session-Id': 'new-id'})
+
+        real_client = httpx.AsyncClient
+
+        def client(*args, **kwargs):
+            self.assertEqual(kwargs['timeout'], settings.agent_timeout_s)
+            return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+        async def send_json(value):
+            sent.append(value)
+
+        async def send_audio(value):
+            audio.append(value)
+
+        session = Session(send_json, send_audio, settings=settings)
+        session._record_utterance = AsyncMock(return_value=b'\x00' * 32000)
+        session._wait_for_playback = AsyncMock(return_value='completed')
+        session._record_usage = unittest.mock.Mock()
+        session.hermes_session_id = 'prior-id'
+        with patch.object(httpx, 'AsyncClient', side_effect=client), \
+             patch.object(session_module._dispatch, 'open_stream', new_callable=AsyncMock,
+                          return_value=(None, False)), \
+             patch.object(session_module._dispatch, 'transcribe_turn', new_callable=AsyncMock,
+                          return_value='che tempo fa?'), \
+             patch.object(session_module, 'save_turn_audio'), \
+             patch.object(tts_module, 'tts', new_callable=AsyncMock, return_value=b'mp3') as tts, \
+             patch.object(hermes_client, '_ask_cli') as cli, \
+             patch.object(session_module, 'ask_hermes') as ask:
+            await asyncio.wait_for(session._run_turn(b'pcm', True, manual=True), 2)
+            cli.assert_not_called()
+            ask.assert_not_called()
+            self.assertIn(expected_reply, [call.args[0] for call in tts.await_args_list])
+
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(closed.is_set())
+        self.assertTrue(finalized.is_set())
+        self.assertEqual([item['text'] for item in sent if item['type'] == 'reply'],
+                         [expected_reply])
+        self.assertEqual(session.state, 'listening')
+        self.assertTrue(audio)
+        self.assertFalse(session._jobs)
+        self.assertIsNone(session._reading)
+        return session, sent
+
+    async def test_approval_closes_open_stream_and_speaks_fixed_reply_once(self):
+        session, sent = await self.run_stream_turn([
+            'event: approval.request\ndata: {"action":"terminal"}\n\n',
+        ], session_module.APPROVAL_NOT_AVAILABLE_REPLY, hold_open=True)
+        self.assertEqual([item for item in sent if item['type'] == 'approval'],
+                         [{'type': 'approval', 'turn': 1,
+                           'approval': {'action': 'terminal'}}])
+        self.assertEqual(session.hermes_session_id, 'prior-id')
+
+    async def test_keepalive_then_silence_closes_stream_and_speaks_stall_reply_once(self):
+        session, _ = await self.run_stream_turn(
+            [': keepalive\n\n'], session_module.AGENT_STALLED_REPLY, hold_open=True)
+        self.assertEqual(session.hermes_session_id, 'prior-id')
+
+    async def test_continuous_keepalives_do_not_hide_stall(self):
+        await self.run_stream_turn(
+            [': keepalive\n\n'], session_module.AGENT_STALLED_REPLY, keepalives=True)
+
+    async def test_stall_after_partial_audio_still_speaks_fixed_reply(self):
+        _, sent = await self.run_stream_turn([
+            'data: {"choices":[{"delta":{"content":"Parziale."}}]}\n\n',
+        ], session_module.AGENT_STALLED_REPLY, hold_open=True)
+        self.assertIn('audio_end', [item['type'] for item in sent])
+        self.assertIn('audio', [item['type'] for item in sent])
+
+    async def test_tool_and_status_events_reset_stall_deadline(self):
+        await self.run_stream_turn([
+            'event: hermes.status\ndata: {"message":"working"}\n\n',
+            'event: hermes.tool.progress\ndata: {"message":"tool output"}\n\n',
+            'data: {"choices":[{"delta":{"content":"Ciao mondo."}}]}\n\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n',
+        ], 'Ciao mondo.', delay=0.12)
+
+    async def test_normal_deltas_reset_stall_deadline_and_deliver_reply(self):
+        session, _ = await self.run_stream_turn([
+            'data: {"choices":[{"delta":{"content":"Ciao "}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"mondo."}}]}\n\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n',
+        ], 'Ciao mondo.', delay=0.12)
+        self.assertEqual(session.hermes_session_id, 'new-id')
+
+
 class SegmentedPlaybackTests(unittest.TestCase):
     def setUp(self):
         self.settings = load_settings({})
