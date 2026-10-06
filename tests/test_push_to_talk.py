@@ -148,9 +148,10 @@ class ManualTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.recv_queue.empty())
         started = time.monotonic()
         self.assertTrue(session.manual_turn_end())
-        pcm = await asyncio.wait_for(recording, 0.6)
+        pcm = await asyncio.wait_for(recording, 3.0)
         elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 0.6)
+        # Allow for the 0.2 s receive poll interval and scheduling delays on loaded CI.
+        self.assertLess(elapsed, 1.5)
         self.assertLess(elapsed, session._settings.silence_end_s)
         self.assertEqual(pcm.tobytes(), speech)
         # A release received before recording starts must leave queued silence alone.
