@@ -44,7 +44,7 @@ class PushToTalkProtocolTests(unittest.TestCase):
 
     def test_english_ui_and_ptt_controls(self):
         html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
-        for text in ('lang="en"', 'id="pttBtn"', 'Hold to talk', 'Release to send',
+        for text in ('lang="en"', 'id="pttBtn"', 'id="tapBtn"', 'Tap to talk', 'Tap to stop', 'Hold to talk', 'Release to send',
                      '{type:"ptt", phase:"down"}', '{type:"ptt", phase:"up"}',
                      '"pointercancel"', '"lostpointercapture"', 'setPointerCapture',
                      'touch-action:none', 'turnIsManual ? "MANUAL"'):

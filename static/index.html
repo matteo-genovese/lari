@@ -61,6 +61,8 @@
   .err-line{color:var(--err); font-size:13px}
 
   .cta{width:100%; max-width:520px; display:flex; flex-direction:column; gap:10px}
+  .cta .pair{display:flex; gap:10px}
+  .cta .pair button{flex:1; min-width:0; padding:17px 8px}
   button{
     width:100%; padding:17px; border-radius:14px; border:1px solid var(--line);
     background:var(--accent); color:#06120d; font-size:16px; font-weight:700; cursor:pointer;
@@ -88,7 +90,10 @@
   <div class="log" id="log"></div>
 
   <div class="cta" style="margin-top:14px">
-    <button id="pttBtn" class="ptt hidden" type="button">Hold to talk</button>
+    <div id="talkPair" class="pair hidden">
+      <button id="pttBtn" class="ptt hidden" type="button">Hold to talk</button>
+      <button id="tapBtn" class="ptt hidden" type="button">Tap to talk</button>
+    </div>
     <button id="startBtn">Start listening</button>
     <button id="stopBtn" class="ghost hidden">Stop</button>
     <button id="interruptBtn" class="ghost hidden">Stop response</button>
@@ -104,8 +109,8 @@
   const $ = id => document.getElementById(id);
   const orb = $("orb"), label = $("label"), log = $("log"), dot = $("dot"), connTxt = $("connTxt");
   const startBtn = $("startBtn"), stopBtn = $("stopBtn"), interruptBtn = $("interruptBtn");
-  const pttBtn = $("pttBtn");
-  let pttHeld = false, turnIsManual = false;
+  const pttBtn = $("pttBtn"), tapBtn = $("tapBtn"), talkPair = $("talkPair");
+  let pttHeld = false, tapArmed = false, turnIsManual = false;
   const meterBar = $("meterBar"), hint = $("hint"), usageStatus = $("usageStatus");
 
   let ws = null, ctx = null, stream = null, processor = null, source = null;
@@ -133,7 +138,7 @@
     const remaining = Math.ceil((followupUntil - Date.now()) / 1000);
     if (followupUntil && remaining <= 0){
       followupUntil = 0;
-      if (connected && currentState === "listening" && wakePhrase){
+      if (!tapArmed && connected && currentState === "listening" && wakePhrase){
         hint.textContent = `Say “${wakePhrase}” to talk.`;
       }
     }
@@ -205,7 +210,7 @@
   }
   function setConn(on){
     connected = on;
-    if (!on){ clearPttHeld(); turnIsManual = false; turnIsFollowup = false; followupUntil = 0; sttMode = null; sttTurn = null; paidAudioThisTurn = false; }
+    if (!on){ disarmTap(false); clearPttHeld(); turnIsManual = false; turnIsFollowup = false; followupUntil = 0; sttMode = null; sttTurn = null; paidAudioThisTurn = false; }
     dot.className = "dot" + (on ? " on" : "");
     connTxt.textContent = on ? "connected" : "disconnected";
     renderUsage();
@@ -270,6 +275,7 @@
     }
     clearReleaseTimer();
     clearPttHeld();
+    disarmTap(false);
     playing = true;
     showInterrupt(true);
     setState("speaking");
@@ -344,6 +350,7 @@
     playback.active = audio;
     playback.activeUrl = url;
     clearPttHeld();
+    disarmTap(false);
     playing = true;
     audio.onended = () => {
       if (generation !== playback.generation || playback.active !== audio) return;
@@ -444,6 +451,10 @@
     }
     switch (msg.type){
       case "state":
+        if (msg.phrase) wakePhrase = msg.phrase;
+        if (["listening", "transcribing", "thinking", "speaking", "error"].includes(msg.state)){
+          disarmTap(false);
+        }
         if (msg.state === "waking"){
           turnIsManual = false;
           turnIsFollowup = false;
@@ -465,9 +476,8 @@
         } else {
           setState(msg.state);
         }
-        if (msg.phrase){
-          wakePhrase = msg.phrase;
-          hint.textContent = `Wake phrase: “${wakePhrase}”`;
+        if (msg.phrase && !tapArmed && connected){
+          hint.textContent = `Say “${wakePhrase}” to talk.`;
         }
         break;
       case "stt_status":
@@ -486,6 +496,7 @@
       case "audio_end": handleAudioEnd(msg); break;
       case "audio": handleLegacyAudio(msg); break;
       case "fatal":
+        disarmTap(false);
         if (playback.mode) failPlayback("Audio error: " + (msg.error || "fatal error"));
         setState("error"); line("hermes", "Fatal error: " + msg.error, "err-line");
         break;
@@ -606,6 +617,7 @@
     interruptPendingTurn = turn;
     sendJson({type:"interrupt", turn});
     clearPttHeld();
+    disarmTap(false);
     playing = true;
   }
 
@@ -620,6 +632,7 @@
   }
 
   async function start(){
+    disarmTap(false);
     try {
       await startMic();
       await lockScreen();
@@ -628,6 +641,8 @@
       startBtn.classList.add("hidden");
       stopBtn.classList.remove("hidden");
       pttBtn.classList.remove("hidden");
+      tapBtn.classList.remove("hidden");
+      talkPair.classList.remove("hidden");
       hint.textContent = wakePhrase ? `Listening. Say “${wakePhrase}”.` : "Connecting, loading the wake phrase…";
       setState("listening");
       keepalive = setInterval(() => {
@@ -650,6 +665,7 @@
     }
   }
   function stop(){
+    disarmTap(false);
     clearPttHeld();
     running = false;
     clearInterval(keepalive);
@@ -664,9 +680,31 @@
     startBtn.classList.remove("hidden");
     stopBtn.classList.add("hidden");
     pttBtn.classList.add("hidden");
+    tapBtn.classList.add("hidden");
+    talkPair.classList.add("hidden");
     hint.textContent = wakePhrase ? `Say “${wakePhrase}” to talk. Keep the screen on and the phone charging.` : "Start listening to load the configured wake phrase.";
   }
   let keepalive = null;
+
+  function armTap(){
+    if (tapArmed || pttHeld || !running || !ws || ws.readyState !== 1 || playing || currentState !== "listening") return;
+    tapArmed = true;
+    tapBtn.classList.add("held");
+    tapBtn.textContent = "Tap to stop";
+    hint.textContent = "Tap again to send.";
+    sendJson({type:"ptt", phase:"down"});
+  }
+  function disarmTap(sendUp){
+    const wasArmed = tapArmed;
+    tapArmed = false;
+    tapBtn.classList.remove("held");
+    tapBtn.textContent = "Tap to talk";
+    if (wasArmed){
+      if (sendUp) sendJson({type:"ptt", phase:"up"});
+      hint.textContent = connected && wakePhrase ? `Say “${wakePhrase}” to talk.` : "";
+    }
+  }
+  tapBtn.onclick = () => tapArmed ? disarmTap(true) : armTap();
 
   function clearPttHeld(){
     pttHeld = false;
@@ -679,7 +717,8 @@
     sendJson({type:"ptt", phase:"up"});
   }
   pttBtn.addEventListener("pointerdown", ev => {
-    if (pttHeld || !running || !ws || ws.readyState !== 1 || playing || currentState !== "listening") return;
+    if (tapArmed || pttHeld || !running || !ws || ws.readyState !== 1 || playing || currentState !== "listening") return;
+    disarmTap(false);
     ev.preventDefault();
     pttHeld = true;
     pttBtn.classList.add("held");

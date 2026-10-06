@@ -81,6 +81,8 @@ whether captured audio was sent to realtime STT or kept local.
 | `ptt` | JSON `type`, `phase` (`down` or `up`) | Press to start a manual turn; release to close the utterance |
 | `diag` | JSON `type`; `ctx`, `rate`, `mic`, `frames`, `vis`, `raw` | Browser microphone diagnostics |
 
+The phone UI offers hold-to-talk and tap-to-toggle side by side; both send the same `ptt` pair (`phase: down`, then `phase: up`).
+
 Hold-to-talk bypasses the local wake gate for that turn, and release closes the utterance; it is not voice barge-in.
 
 Turn identifiers prevent stale playback/interruption events from affecting a
