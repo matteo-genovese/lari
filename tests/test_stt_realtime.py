@@ -5,6 +5,7 @@ import json
 import logging
 import multiprocessing
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -52,6 +53,79 @@ class FakeWebSocket:
 
 
 class RealtimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_audio_reserves_budget_outside_event_loop(self):
+        calls = []
+        loop_thread = threading.current_thread()
+        loop = asyncio.get_running_loop()
+
+        class RecordingBudget:
+            def reserve(self, seconds):
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
+                calls.append((threading.current_thread(), running_loop, seconds))
+                return True
+
+        fake = FakeWebSocket()
+        session = stt_backends.RealtimeScribe(fake, None, RecordingBudget())
+        chunks = [np.full(160, value, dtype=np.int16).tobytes() for value in range(3)]
+        for chunk in chunks:
+            self.assertTrue(await session.send_audio(chunk))
+
+        self.assertIs(asyncio.get_running_loop(), loop)
+        self.assertEqual(len(calls), len(chunks))
+        for thread, running_loop, seconds in calls:
+            self.assertIsNot(thread, loop_thread)
+            self.assertIsNone(running_loop)
+            self.assertAlmostEqual(seconds, 0.01)
+        self.assertEqual(
+            [message["audio_base_64"] for message in fake.sent],
+            [stt_backends.base64.b64encode(chunk).decode("ascii") for chunk in chunks],
+        )
+
+    async def test_event_loop_ticks_while_sending_audio_with_fsync(self):
+        tick_seen = threading.Event()
+        ticks = 0
+        real_fsync = stt_backends.os.fsync
+
+        def fsync_with_tick(fd):
+            real_fsync(fd)
+            # Hold the first real write until the loop ticks. The timeout only
+            # bounds a regression; no assertion depends on disk latency.
+            tick_seen.wait(timeout=1.0)
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.005)
+                ticks += 1
+                tick_seen.set()
+
+        with tempfile.TemporaryDirectory() as root:
+            budget = stt_backends.DailyAudioBudget(
+                path=Path(root) / "usage.json", daily_seconds=10,
+                settings=get_settings(),
+            )
+            fake = FakeWebSocket()
+            session = stt_backends.RealtimeScribe(fake, None, budget)
+            chunk = np.zeros(160, dtype=np.int16).tobytes()
+            chunk_count = 8
+            ticker_task = asyncio.create_task(ticker())
+            try:
+                with patch.object(stt_backends.os, "fsync", side_effect=fsync_with_tick) as fsync:
+                    for _ in range(chunk_count):
+                        self.assertTrue(await session.send_audio(chunk))
+                    self.assertGreaterEqual(ticks, 1)
+                    self.assertEqual(fsync.call_count, chunk_count)
+            finally:
+                ticker_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await ticker_task
+
+            self.assertEqual(len(fake.sent), chunk_count)
+            self.assertAlmostEqual(budget.remaining(), 9.92, places=6)
+
     async def test_success_sends_pcm_partial_and_one_commit(self):
         fake = FakeWebSocket([
             {"message_type": "session_started"},
