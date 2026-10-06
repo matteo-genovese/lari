@@ -19,11 +19,14 @@ class WebSocketAdapterTests(unittest.IsolatedAsyncioTestCase):
             {"text": json.dumps({"type": "ping"})},
             {"text": json.dumps({"type": "playback_done", "turn": 4, "status": "failed"})},
             {"text": json.dumps({"type": "interrupt", "turn": 3})},
+            {"text": json.dumps({"type": "ptt", "phase": "down"})},
+            {"text": json.dumps({"type": "ptt", "phase": "up"})},
             {"type": "websocket.disconnect"},
         ])
         session = Mock(
             state="listening", start=AsyncMock(), disconnect=AsyncMock(),
             on_audio=AsyncMock(), send_json=AsyncMock(),
+            manual_turn_start=AsyncMock(), manual_turn_end=Mock(),
             playback_completed=AsyncMock(), interrupt=AsyncMock(return_value=False),
         )
         active = set()
@@ -43,6 +46,8 @@ class WebSocketAdapterTests(unittest.IsolatedAsyncioTestCase):
         session.on_audio.assert_awaited_once_with(b"\x01\x00")
         session.playback_completed.assert_awaited_once_with(4, status="failed")
         session.interrupt.assert_awaited_once_with(3)
+        session.manual_turn_start.assert_awaited_once_with()
+        session.manual_turn_end.assert_called_once_with()
         self.assertEqual([call.args[0] for call in session.send_json.await_args_list], [
             {"type": "pong", "state": "listening"},
             {"type": "interrupt_rejected", "turn": 3},

@@ -17,6 +17,7 @@ from . import usage
 log = logging.getLogger("lari")
 SAMPLE_RATE = 16000
 COOLDOWN_S = 2.0
+MANUAL_PREROLL_S = 0.6
 
 class Session(SessionAudio, WakeWorker):
     """One satellite owns turns, playback, realtime, follow-up and UI state.
@@ -33,6 +34,8 @@ class Session(SessionAudio, WakeWorker):
         self.state = "listening"           # the worker starts listening immediately
         self.last_wake = 0.0
         self._init_audio()
+        self._manual_claim = threading.Event()
+        self._manual_active = False
         self.recv_queue: queue.Queue = queue.Queue(maxsize=400)
         self.stop = threading.Event()
         self.turn = 0
@@ -359,9 +362,44 @@ class Session(SessionAudio, WakeWorker):
         self.state = state
         await self.send_json(protocol.state(state=state, **extra))
 
-    async def _on_wake(self, initial_pcm: bytes = b"",
-                       local_wake_confirmed: bool = False):
+    async def manual_turn_start(self) -> bool:
         if self.stop.is_set():
+            log.info("PTT: pressione ignorata, sessione arrestata")
+            return False
+        if self._manual_active:
+            log.info("PTT: pressione ignorata, turno manuale già attivo")
+            return False
+        if self.state != "listening":
+            log.info("PTT: pressione ignorata, stato %s", self.state)
+            return False
+        # A short prelude bridges frames between the press and recorder start;
+        # a full 1.5 s would only add silence to a paid realtime stream.
+        prelude = b"" if self.echo_muted(time.time(), self._settings.echo_mute_s) else (
+            self.pre_roll()[-int(MANUAL_PREROLL_S * SAMPLE_RATE * 2):]
+        )
+        self._manual_active = True
+        self._utterance_close.clear()
+        self._manual_claim.set()
+        self.last_wake = time.time()
+        self.state = "waking"
+        asyncio.create_task(self._on_wake(
+            initial_pcm=prelude, local_wake_confirmed=False, manual=True,
+        ))
+        log.info("PTT: avvio turno manuale")
+        return True
+
+    def manual_turn_end(self) -> bool:
+        if not self._manual_active:
+            return False
+        self._utterance_close.set()
+        return True
+
+    async def _on_wake(self, initial_pcm: bytes = b"",
+                       local_wake_confirmed: bool = False, manual: bool = False):
+        if self.stop.is_set():
+            if manual:
+                self._manual_claim.clear()
+                self._manual_active = False
             return
         current_task = asyncio.current_task()
         self._jobs.add(current_task)
@@ -375,7 +413,7 @@ class Session(SessionAudio, WakeWorker):
                     return
                 self._turn_task = current_task
             try:
-                await self._run_turn(initial_pcm, local_wake_confirmed)
+                await self._run_turn(initial_pcm, local_wake_confirmed, manual=manual)
             finally:
                 if self._realtime is not None:
                     await self._realtime.close()
@@ -384,9 +422,15 @@ class Session(SessionAudio, WakeWorker):
                     self._turn_task = None
                     self.active_turn = None
         finally:
+            if manual:
+                self._manual_claim.clear()
+                self._manual_active = False
             self._jobs.discard(current_task)
 
-    async def _run_turn(self, initial_pcm, local_wake_confirmed):
+    async def _run_turn(self, initial_pcm, local_wake_confirmed, manual=False):
+        if not manual:
+            self._utterance_close.clear()
+        manual_fields = {"manual": True} if manual else {}
         followup_at_start = time.monotonic() < self.conversation_until and not self.awaiting_playback
         if self._playback_waiter is not None and not self._playback_waiter.done():
             self._playback_waiter.cancel()
@@ -399,17 +443,17 @@ class Session(SessionAudio, WakeWorker):
         t_turn = time.time()
         # The window must be evaluated when speech starts, NOT after STT:
         # On slow CPUs transcription can take many seconds.
-        await self.set_state("waking", turn=turn, followup=followup_at_start)
+        await self.set_state("waking", turn=turn, followup=followup_at_start, **manual_fields)
         await self._clear_partial(turn)
         # pre-roll: the wake phrase has already passed while the trigger decides,
         # so restart from the last 1.5 s already held in the rotating buffer
         prelude = bytes(initial_pcm)
-        if not prelude and self._settings.wake_provider == "whisper":
+        if not prelude and not manual and self._settings.wake_provider == "whisper":
             prelude = self.pre_roll()
         # pause only if a reply was just played (TTS echo)
         if self.echo_muted(time.time(), 3.0):
             await asyncio.sleep(0.25)
-        await self.set_state("recording", turn=turn, followup=followup_at_start)
+        await self.set_state("recording", turn=turn, followup=followup_at_start, **manual_fields)
         realtime, realtime_start_failed = await _dispatch.open_stream(
             on_partial=lambda text: self._send_partial(text, turn), settings=self._settings,
         )
@@ -441,7 +485,7 @@ class Session(SessionAudio, WakeWorker):
         try:
             text = await _dispatch.transcribe_turn(
                 pcm, realtime, turn, followup_at_start,
-                start_failed=realtime_start_failed, settings=self._settings,
+                start_failed=realtime_start_failed, settings=self._settings, manual=manual,
             )
         except Exception as exc:
             log.exception("STT fallito")
@@ -453,7 +497,7 @@ class Session(SessionAudio, WakeWorker):
             await self.set_state("listening")
             return
         if self._settings.wake_provider == "whisper":
-            cmd = _dispatch.command_for_turn(text, followup_at_start, local_wake_confirmed, self._settings)
+            cmd = _dispatch.command_for_turn(text, followup_at_start, local_wake_confirmed, self._settings, manual=manual)
             if cmd is None:
                 log.info("turno %d scartato (fuori dalla conversazione): %r", turn, text[:80])
                 self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
@@ -461,6 +505,11 @@ class Session(SessionAudio, WakeWorker):
                 await self.set_state("listening", note="non era per me")
                 return
             if not cmd.strip():
+                if manual:
+                    log.info("turno %d: push-to-talk senza contenuto", turn)
+                    await self._clear_partial(turn)
+                    await self.set_state("listening", note="niente da trascrivere")
+                    return
                 log.info("turno %d: sveglia senza comando", turn)
                 await self._clear_partial(turn)
                 await self._speak("Sì?", turn)

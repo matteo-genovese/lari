@@ -59,9 +59,14 @@ send({type:"state",state:"waking",followup:true,turn:2});
 const followupPending = send({type:"state",state:"recording",followup:true,turn:2});
 const fallback = send({type:"stt_status",mode:"local",turn:2});
 send({type:"state",state:"listening",turn:2});
+send({type:"state",state:"waking",followup:true,manual:true,turn:3});
+const manualPending = send({type:"state",state:"recording",followup:true,manual:true,turn:3});
+const manualLocal = send({type:"stt_status",mode:"local",turn:3});
+send({type:"state",state:"waking",followup:false,turn:4});
+const nextWake = status();
 api.setConn(false);
 const disconnected = status();
-console.log(JSON.stringify({preWake,pending,paid,fallbackAfterPaid,thinking,ready,followup,followupPending,fallback,expired,expiredHint,disconnected}));
+console.log(JSON.stringify({preWake,pending,paid,fallbackAfterPaid,thinking,ready,followup,followupPending,fallback,expired,expiredHint,manualPending,manualLocal,nextWake,disconnected}));
 '''
         harness = harness.replace("SOURCE", json.dumps(script))
         binary = shutil.which("node")
@@ -71,22 +76,29 @@ console.log(JSON.stringify({preWake,pending,paid,fallbackAfterPaid,thinking,read
             capture_output=True, check=True, timeout=15,
         )
         states = json.loads(result.stdout)
-        self.assertIn("LOCALE", states["preWake"])
+        self.assertIn("LOCAL", states["preWake"])
         self.assertIn("POST-WAKE", states["pending"])
-        self.assertIn("NON CONFERMATO", states["pending"])
+        self.assertIn("NOT CONFIRMED", states["pending"])
         self.assertIn("ELEVENLABS", states["paid"])
-        self.assertIn("AUDIO INVIATO", states["paid"])
-        self.assertIn("AUDIO GIÀ INVIATO", states["fallbackAfterPaid"])
-        self.assertIn("LOCALE", states["fallbackAfterPaid"])
-        self.assertIn("NESSUN AUDIO", states["thinking"])
-        self.assertIn("LOCALE", states["ready"])
+        self.assertIn("AUDIO SENT", states["paid"])
+        self.assertIn("AUDIO ALREADY SENT", states["fallbackAfterPaid"])
+        self.assertIn("LOCAL", states["fallbackAfterPaid"])
+        self.assertIn("NO AUDIO", states["thinking"])
+        self.assertIn("LOCAL", states["ready"])
         self.assertIn("FOLLOW-UP", states["followup"])
         self.assertIn("FOLLOW-UP", states["followupPending"])
-        self.assertIn("LOCALE", states["fallback"])
-        self.assertIn("LOCALE", states["expired"])
+        self.assertIn("LOCAL", states["fallback"])
+        self.assertIn("LOCAL", states["expired"])
         self.assertNotIn("FOLLOW-UP", states["expired"])
         self.assertIn("test phrase", states["expiredHint"])
-        self.assertIn("DISCONNESSO", states["disconnected"])
+        self.assertIn("MANUAL", states["manualPending"])
+        self.assertIn("NOT CONFIRMED", states["manualPending"])
+        self.assertNotIn("FOLLOW-UP", states["manualPending"])
+        self.assertIn("MANUAL", states["manualLocal"])
+        self.assertIn("LOCAL", states["manualLocal"])
+        self.assertIn("POST-WAKE", states["nextWake"])
+        self.assertNotIn("MANUAL", states["nextWake"])
+        self.assertIn("DISCONNECTED", states["disconnected"])
 
 
 if __name__ == "__main__":

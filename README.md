@@ -43,7 +43,7 @@ explicitly to the runtime components. The session object owns the per-satellite
 state and orchestration and is transport-agnostic, so another client could drive
 the same voice pipeline without changing it.
 
-The browser displays **idle, listening, thinking, speaking and error** using individually derived animated SVG assets; `scripts/derive_mascot_states.py` rebuilds them from the editable animated source `static/assets/lare-concept.svg` (which doubles as the state-cycle demo at `/<token>/assets/lare-concept.svg`). Each asset carries only its own state's motion. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge does not open a provider connection until the local wake gate confirms the utterance.
+The browser displays **idle, listening, thinking, speaking and error** using individually derived animated SVG assets; `scripts/derive_mascot_states.py` rebuilds them from the editable animated source `static/assets/lare-concept.svg` (which doubles as the state-cycle demo at `/<token>/assets/lare-concept.svg`). Each asset carries only its own state's motion. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge opens a provider connection only after the local wake gate confirms the utterance or a manual turn is started.
 
 ## WebSocket protocol
 
@@ -56,7 +56,7 @@ whether captured audio was sent to realtime STT or kept local.
 
 | Lari → browser type | Fields | Meaning |
 | --- | --- | --- |
-| `state` | `state`; optional `turn`, `followup`, `phrase`, `provider`, `voice`, `sensitivity`, `confirm_frames`, `interrupted`, `note`, `error` | Semantic state; initial frame includes wake/voice configuration |
+| `state` | `state`; optional `turn`, `followup`, `manual`, `phrase`, `provider`, `voice`, `sensitivity`, `confirm_frames`, `interrupted`, `note`, `error` | Semantic state; initial frame includes wake/voice configuration |
 | `partial_transcript` | `text`, `turn` | Provisional transcript; empty text clears it |
 | `transcript` | `text`, `turn`; optional `command` | Final user text, optionally wake-stripped |
 | `reply` | `text`, `turn` | Assistant reply from Hermes |
@@ -78,7 +78,10 @@ whether captured audio was sent to realtime STT or kept local.
 | `ping` | JSON `type` | Request `pong` |
 | `playback_done` | JSON `type`, `turn`, optional `status` (`completed` by default or `failed`) | Acknowledge actual browser playback; completion opens follow-up |
 | `interrupt` | JSON `type`, `turn` | Cancel the matching active turn |
+| `ptt` | JSON `type`, `phase` (`down` or `up`) | Press to start a manual turn; release to close the utterance |
 | `diag` | JSON `type`; `ctx`, `rate`, `mic`, `frames`, `vis`, `raw` | Browser microphone diagnostics |
+
+Hold-to-talk bypasses the local wake gate for that turn, and release closes the utterance; it is not voice barge-in.
 
 Turn identifiers prevent stale playback/interruption events from affecting a
 new turn. Legacy playback acknowledgements without `turn` remain accepted.
@@ -116,7 +119,7 @@ set +a
 
 Under systemd use `ExecStart=<repo>/.venv/bin/python -m lari.server` with `WorkingDirectory` set to the repository root.
 
-Expose it **only** through a private network with HTTPS (for example, Tailscale Serve). Open `https://<your-private-host>/<your-token>/` in the phone browser and press **Avvia ascolto**. The initial red *disconnesso* indicator is expected before starting the microphone/WebSocket. Keep the page foregrounded and the phone awake. Never expose this token-protected bridge directly to the open internet: it can invoke Hermes tools.
+Expose it **only** through a private network with HTTPS (for example, Tailscale Serve). Open `https://<your-private-host>/<your-token>/` in the phone browser and press **Start listening**. The initial red *disconnected* indicator is expected before starting the microphone/WebSocket. Keep the page foregrounded and the phone awake. Never expose this token-protected bridge directly to the open internet: it can invoke Hermes tools.
 
 ## Runtime settings
 

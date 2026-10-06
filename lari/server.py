@@ -181,6 +181,11 @@ async def ws_endpoint(token: str, websocket: WebSocket):
                 elif data["type"] == "interrupt":
                     if not await session.interrupt(data.get("turn")):
                         await session.send_json(protocol.interrupt_rejected(turn=data.get("turn")))
+                elif data["type"] == "ptt":
+                    if data.get("phase") == "down":
+                        await session.manual_turn_start()
+                    else:
+                        session.manual_turn_end()
                 elif data["type"] == "diag":
                     log.info("diag phone: %s", data)
     except WebSocketDisconnect:

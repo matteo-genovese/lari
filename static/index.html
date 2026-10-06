@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
@@ -53,7 +53,7 @@
   .month{width:100%; max-width:min(100%,360px); margin-top:6px; color:var(--dim); font-size:10px; letter-spacing:.06em; text-align:center}
 
   .log{width:100%; max-width:520px; max-height:34vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px 12px}
-  .log:empty::before{content:"Nessuna conversazione."; color:var(--dim); font-size:13px}
+  .log:empty::before{content:"No conversation yet."; color:var(--dim); font-size:13px}
   .turn{padding:7px 0; border-bottom:1px solid var(--line); font-size:14.5px}
   .turn:last-child{border-bottom:0}
   .who{font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); margin-bottom:2px}
@@ -65,6 +65,8 @@
     width:100%; padding:17px; border-radius:14px; border:1px solid var(--line);
     background:var(--accent); color:#06120d; font-size:16px; font-weight:700; cursor:pointer;
   }
+  .ptt{background:var(--accent); touch-action:none; user-select:none}
+  .ptt.held{background:var(--warn)}
   button.ghost{background:transparent; color:var(--dim); font-weight:500; border-color:var(--line)}
   button:active{transform:scale(.99)}
   .hint{font-size:12.5px; color:var(--dim); text-align:center}
@@ -74,22 +76,23 @@
 <body>
   <header>
     <h1>Lare</h1>
-    <div class="conn"><span class="dot" id="dot"></span><span id="connTxt">disconnesso</span></div>
+    <div class="conn"><span class="dot" id="dot"></span><span id="connTxt">disconnected</span></div>
   </header>
 
   <div class="stage">
-    <div class="orb idle" id="orb" role="img" aria-label="Lare"><div class="lare-sprite" aria-hidden="true"></div><div class="label" id="label">in attesa</div></div>
+    <div class="orb idle" id="orb" role="img" aria-label="Lare"><div class="lare-sprite" aria-hidden="true"></div><div class="label" id="label">idle</div></div>
     <div class="meter"><i id="meterBar"></i></div>
-    <div class="usage" id="usageStatus" role="status" aria-live="polite">DISCONNESSO · nessun audio inviato a ElevenLabs</div>
+    <div class="usage" id="usageStatus" role="status" aria-live="polite">DISCONNECTED · no audio sent to ElevenLabs</div>
   </div>
 
   <div class="log" id="log"></div>
 
   <div class="cta" style="margin-top:14px">
-    <button id="startBtn">Avvia ascolto</button>
-    <button id="stopBtn" class="ghost hidden">Ferma</button>
-    <button id="interruptBtn" class="ghost hidden">Interrompi risposta</button>
-    <div class="hint" id="hint">Avvia l'ascolto per caricare la frase configurata.</div>
+    <button id="pttBtn" class="ptt hidden" type="button">Hold to talk</button>
+    <button id="startBtn">Start listening</button>
+    <button id="stopBtn" class="ghost hidden">Stop</button>
+    <button id="interruptBtn" class="ghost hidden">Stop response</button>
+    <div class="hint" id="hint">Start listening to load the configured wake phrase.</div>
     <div class="month" id="monthUsage"></div>
   </div>
 
@@ -101,6 +104,8 @@
   const $ = id => document.getElementById(id);
   const orb = $("orb"), label = $("label"), log = $("log"), dot = $("dot"), connTxt = $("connTxt");
   const startBtn = $("startBtn"), stopBtn = $("stopBtn"), interruptBtn = $("interruptBtn");
+  const pttBtn = $("pttBtn");
+  let pttHeld = false, turnIsManual = false;
   const meterBar = $("meterBar"), hint = $("hint"), usageStatus = $("usageStatus");
 
   let ws = null, ctx = null, stream = null, processor = null, source = null;
@@ -108,7 +113,7 @@
   let connected = false, currentState = "idle", sttMode = null, sttTurn = null;
   let paidAudioThisTurn = false, followupUntil = 0, turnIsFollowup = false;
   let partialTurn = null, partialNode = null;
-  let playing = false;   // mentre risponde, il microfono resta muto (anti-eco)
+  let playing = false;   // Mute capture during the response to prevent echo.
   let wakePhrase = "";   // supplied by the bridge, never inferred from branding
   let reconnectTries = 0, reconnectTimer = null;
   let speakingTurn = null, lastPlaybackTurn = null;
@@ -119,8 +124,8 @@
     releaseTimer: null, generation: 0
   };
   const states = {
-    listening:"ascolto", waking:"ti ho sentito", recording:"parla", transcribing:"trascrivo",
-    thinking:"penso", speaking:"rispondo", idle:"in attesa", error:"errore"
+    listening:"listening", waking:"wake detected", recording:"speak", transcribing:"transcribing",
+    thinking:"thinking", speaking:"speaking", idle:"idle", error:"error"
   };
 
   function renderUsage(){
@@ -129,40 +134,40 @@
     if (followupUntil && remaining <= 0){
       followupUntil = 0;
       if (connected && currentState === "listening" && wakePhrase){
-        hint.textContent = `Dimmi «${wakePhrase}» per parlare.`;
+        hint.textContent = `Say “${wakePhrase}” to talk.`;
       }
     }
     if (!connected){
       tone = "";
-      text = "DISCONNESSO · nessun audio inviato a ElevenLabs";
+      text = "DISCONNECTED · no audio sent to ElevenLabs";
     } else if (["waking", "recording", "transcribing"].includes(currentState)){
-      const phase = turnIsFollowup ? "FOLLOW-UP" : "POST-WAKE";
+      const phase = turnIsManual ? "MANUAL" : turnIsFollowup ? "FOLLOW-UP" : "POST-WAKE";
       if (sttMode === "realtime"){
         tone = "paid";
         text = currentState === "transcribing"
-          ? "ELEVENLABS · trascrizione (audio già inviato)"
-          : "ELEVENLABS · AUDIO INVIATO (crediti)";
+          ? "ELEVENLABS · transcribing (audio already sent)"
+          : "ELEVENLABS · AUDIO SENT (credits)";
       } else if (sttMode === "local"){
         text = paidAudioThisTurn
-          ? `${phase} · AUDIO GIÀ INVIATO; ora STT LOCALE (nessun nuovo invio)`
-          : `${phase} · STT LOCALE, nessun invio a ElevenLabs`;
+          ? `${phase} · AUDIO ALREADY SENT; now LOCAL STT (no new audio)`
+          : `${phase} · LOCAL STT, nothing sent to ElevenLabs`;
       } else {
         tone = "pending";
-        text = `${phase} · STT in avvio, COSTO NON CONFERMATO`;
+        text = `${phase} · STT STARTING, COST NOT CONFIRMED`;
       }
     } else if (currentState === "listening" && remaining > 0){
       tone = "followup";
-      text = `FOLLOW-UP · LOCALE ora; ElevenLabs se parli (${remaining}s)`;
+      text = `FOLLOW-UP · LOCAL now; ElevenLabs if you speak (${remaining}s)`;
     } else if (currentState === "listening"){
-      text = "PRE-WAKE · SOLO LOCALE; ElevenLabs inattivo";
+      text = "PRE-WAKE · LOCAL ONLY; ElevenLabs idle";
     } else {
       tone = "";
-      text = "NESSUN AUDIO in invio a ElevenLabs";
+      text = "NO AUDIO being sent to ElevenLabs";
     }
     usageStatus.className = "usage " + tone;
     usageStatus.textContent = text;
     if (currentState === "listening" && connected){
-      label.textContent = remaining > 0 ? "follow-up" : "ascolto locale";
+      label.textContent = remaining > 0 ? "follow-up" : "local listening";
     }
   }
   function setState(s){
@@ -174,7 +179,7 @@
   function line(who, text, cls){
     const d = document.createElement("div");
     d.className = "turn";
-    d.innerHTML = `<div class="who ${who==="me"?"me":""}">${who==="me"?"tu":"hermes"}</div><div class="${cls||""}"></div>`;
+    d.innerHTML = `<div class="who ${who==="me"?"me":""}">${who==="me"?"you":"hermes"}</div><div class="${cls||""}"></div>`;
     d.lastChild.textContent = text;
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
@@ -187,7 +192,7 @@
     if (!partialNode){
       partialNode = document.createElement("div");
       partialNode.className = "turn";
-      partialNode.innerHTML = '<div class="who me">tu · in corso</div><div></div>';
+      partialNode.innerHTML = '<div class="who me">you · live</div><div></div>';
       log.appendChild(partialNode);
     }
     partialNode.lastChild.textContent = text;
@@ -200,9 +205,9 @@
   }
   function setConn(on){
     connected = on;
-    if (!on){ followupUntil = 0; sttMode = null; sttTurn = null; paidAudioThisTurn = false; }
+    if (!on){ clearPttHeld(); turnIsManual = false; turnIsFollowup = false; followupUntil = 0; sttMode = null; sttTurn = null; paidAudioThisTurn = false; }
     dot.className = "dot" + (on ? " on" : "");
-    connTxt.textContent = on ? "connesso" : "disconnesso";
+    connTxt.textContent = on ? "connected" : "disconnected";
     renderUsage();
   }
 
@@ -258,12 +263,13 @@
   function markSpeaking(turn){
     if (hasTurn(turn)){
       if (staleTurn(turn) || (hasTurn(playback.turn) && !sameTurn(turn, playback.turn))){
-        rejectProtocol("Risposta audio obsoleta ignorata.");
+        rejectProtocol("Stale audio response ignored.");
         return false;
       }
       speakingTurn = turn;
     }
     clearReleaseTimer();
+    clearPttHeld();
     playing = true;
     showInterrupt(true);
     setState("speaking");
@@ -278,8 +284,8 @@
       lastPlaybackTurn = turn;
       sendJson({type:"playback_done", turn, status:"failed"});
       setState("error");
-      line("hermes", errorText || "Riproduzione audio fallita.", "err-line");
-      hint.textContent = "Riproduzione della risposta fallita.";
+      line("hermes", errorText || "Audio playback failed.", "err-line");
+      hint.textContent = "Response playback failed.";
       return;
     }
     const generation = playback.generation;
@@ -314,13 +320,13 @@
       speakingTurn = null;
       if (running){
         setState("listening");
-        hint.textContent = "Dimmi cosa aggiungere o chiedi una sintesi senza ripetere la frase di sveglia";
+        hint.textContent = "Say what to add, or ask for a summary, without repeating the wake phrase";
       }
     }, Math.max(700, Number(delayMs) || 0));
   }
   function handleInterruptAck(msg, rejected){
     if (!sameTurn(msg.turn, interruptPendingTurn)){
-      rejectProtocol("Conferma interruzione obsoleta ignorata.");
+      rejectProtocol("Stale interruption acknowledgement ignored.");
       return;
     }
     interruptPendingTurn = null;
@@ -337,6 +343,7 @@
     const audio = new Audio(url);
     playback.active = audio;
     playback.activeUrl = url;
+    clearPttHeld();
     playing = true;
     audio.onended = () => {
       if (generation !== playback.generation || playback.active !== audio) return;
@@ -349,14 +356,14 @@
       playNextAudio();
       maybeFinishPlayback();
     };
-    audio.onerror = () => failPlayback("Riproduzione della risposta fallita.", generation);
+    audio.onerror = () => failPlayback("Response playback failed.", generation);
     try {
       const result = audio.play();
       if (result && typeof result.catch === "function"){
-        result.catch(() => failPlayback("Il browser ha rifiutato la riproduzione audio.", generation));
+        result.catch(() => failPlayback("The browser refused audio playback.", generation));
       }
     } catch(e){
-      failPlayback("Il browser ha rifiutato la riproduzione audio.", generation);
+      failPlayback("The browser refused audio playback.", generation);
     }
   }
   function handleBinaryFrame(data){
@@ -364,7 +371,7 @@
     const turnsMatch = sameTurn(pending && pending.turn, playback.turn) ||
       (pending && pending.mode === "legacy" && !hasTurn(pending.turn) && !hasTurn(playback.turn));
     if (!pending || !playback.mode || !turnsMatch){
-      rejectProtocol("Pacchetto audio obsoleto ignorato.");
+      rejectProtocol("Stale audio packet ignored.");
       return;
     }
     playback.awaiting = null;
@@ -374,11 +381,11 @@
   }
   function handleAudioStart(msg){
     if (!hasTurn(msg.turn) || staleTurn(msg.turn) || playback.mode){
-      rejectProtocol("Inizio risposta audio non valido o obsoleto.");
+      rejectProtocol("Invalid or stale audio response start.");
       return;
     }
     if (hasTurn(speakingTurn) && !sameTurn(msg.turn, speakingTurn)){
-      rejectProtocol("Turno audio inatteso ignorato.");
+      rejectProtocol("Unexpected audio turn ignored.");
       return;
     }
     playback.mode = "segmented";
@@ -392,14 +399,14 @@
     const seq = Number(msg.seq);
     if (playback.mode !== "segmented" || !sameTurn(msg.turn, playback.turn) ||
         !Number.isInteger(seq) || seq !== playback.nextSeq || playback.awaiting){
-      rejectProtocol("Segmento audio fuori sequenza ignorato.");
+      rejectProtocol("Out-of-sequence audio segment ignored.");
       return;
     }
     playback.awaiting = {mode:"segmented", turn:msg.turn, seq};
   }
   function handleAudioEnd(msg){
     if (playback.mode !== "segmented" || !sameTurn(msg.turn, playback.turn) || playback.awaiting){
-      rejectProtocol("Fine risposta audio inattesa ignorata.");
+      rejectProtocol("Unexpected audio response end ignored.");
       return;
     }
     playback.ended = true;
@@ -408,11 +415,11 @@
   function handleLegacyAudio(msg){
     const turn = hasTurn(msg.turn) ? msg.turn : speakingTurn;
     if (playback.mode && playback.mode !== "legacy"){
-      rejectProtocol("Audio legacy ignorato durante una risposta segmentata.");
+      rejectProtocol("Legacy audio ignored during a segmented response.");
       return;
     }
     if (hasTurn(turn) && staleTurn(turn)){
-      rejectProtocol("Audio legacy obsoleto ignorato.");
+      rejectProtocol("Stale legacy audio ignored.");
       return;
     }
     if (!playback.mode){
@@ -420,7 +427,7 @@
       playback.turn = turn;
       playback.completionScheduled = false;
     } else if (playback.awaiting || playback.completionScheduled || playback.releaseTimer){
-      rejectProtocol("Audio legacy fuori sequenza ignorato.");
+      rejectProtocol("Out-of-sequence legacy audio ignored.");
       return;
     }
     playback.awaiting = {mode:"legacy", turn:playback.turn};
@@ -431,13 +438,15 @@
     try { msg = JSON.parse(raw); } catch { return; }
     if (!msg || typeof msg.type !== "string") return;
     if (playback.awaiting){
-      rejectProtocol("Risposta audio non valida: atteso un pacchetto binario.");
-      failPlayback("Il server ha interrotto la sequenza audio.");
+      rejectProtocol("Invalid audio response: expected a binary packet.");
+      failPlayback("The server interrupted the audio sequence.");
       return;
     }
     switch (msg.type){
       case "state":
         if (msg.state === "waking"){
+          turnIsManual = false;
+          turnIsFollowup = false;
           followupUntil = 0;
           sttMode = null;
           paidAudioThisTurn = false;
@@ -445,6 +454,9 @@
         }
         if ((msg.state === "waking" || msg.state === "recording") && typeof msg.followup === "boolean"){
           turnIsFollowup = msg.followup;
+        }
+        if ((msg.state === "waking" || msg.state === "recording") && typeof msg.manual === "boolean"){
+          turnIsManual = msg.manual;
         }
         if (msg.state === "speaking"){
           markSpeaking(msg.turn);
@@ -455,7 +467,7 @@
         }
         if (msg.phrase){
           wakePhrase = msg.phrase;
-          hint.textContent = "Frase di sveglia: «" + wakePhrase + "»";
+          hint.textContent = `Wake phrase: “${wakePhrase}”`;
         }
         break;
       case "stt_status":
@@ -474,8 +486,8 @@
       case "audio_end": handleAudioEnd(msg); break;
       case "audio": handleLegacyAudio(msg); break;
       case "fatal":
-        if (playback.mode) failPlayback("Errore audio: " + (msg.error || "errore fatale"));
-        setState("error"); line("hermes", "Errore fatale: " + msg.error, "err-line");
+        if (playback.mode) failPlayback("Audio error: " + (msg.error || "fatal error"));
+        setState("error"); line("hermes", "Fatal error: " + msg.error, "err-line");
         break;
       case "interrupt_ack": handleInterruptAck(msg, false); break;
       case "interrupt_rejected": handleInterruptAck(msg, true); break;
@@ -483,8 +495,8 @@
         followupUntil = Date.now() + Math.max(0, Number(msg.seconds) || 0) * 1000;
         renderUsage();
         hint.textContent = msg.interrupted
-          ? "Dimmi cosa aggiungere o chiedi una sintesi senza ripetere la frase di sveglia"
-          : `Puoi continuare senza ripetere la frase di sveglia per ${msg.seconds} secondi.`;
+          ? "Say what to add, or ask for a summary, without repeating the wake phrase"
+          : `You can keep talking without the wake phrase for ${msg.seconds} seconds.`;
         break;
       case "pong": break;
     }
@@ -492,25 +504,25 @@
 
   // —— capture: mic -> PCM 16k mono int16 ——
   async function startMic(){
-    // ?raw=1 -> microfono grezzo: niente cancellazione eco/NS. Spesso il
-    // processing del telefono rende la voce inintelligibile per gli ASR.
+    // ?raw=1 disables echo cancellation and noise suppression; phone
+    // processing can make speech unintelligible to ASR.
     const raw = new URLSearchParams(location.search).get("raw") === "1";
     stream = await navigator.mediaDevices.getUserMedia({
       audio: raw
         ? { echoCancellation:false, noiseSuppression:false, autoGainControl:true, channelCount:1 }
         : { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 }
     });
-    if (raw) hint.textContent = "Modalità grezza attiva (niente cancellazione eco).";
+    if (raw) hint.textContent = "Raw mode active (no echo cancellation).";
     ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === "suspended") { try { await ctx.resume(); } catch(e){} }
     source = ctx.createMediaStreamSource(stream);
     processor = ctx.createScriptProcessor(4096, 1, 1);
     source.connect(processor);
-    processor.connect(ctx.destination); // necessario per far girare lo ScriptProcessor
+    processor.connect(ctx.destination); // Required to keep the ScriptProcessor running.
     processor.onaudioprocess = e => {
       window.__frames = (window.__frames || 0) + 1;
       if (!running || !ws || ws.readyState !== 1) return;
-      if (playing) return;   // non inviare l'eco della nostra stessa risposta
+      if (playing) return;   // Do not send the echo of our own response.
       const inp = e.inputBuffer.getChannelData(0);
       const out = downsample(inp, ctx.sampleRate, 16000);
       meterBar.style.width = Math.min(100, peak(out) * 260) + "%";
@@ -544,7 +556,7 @@
       ws = new WebSocket(WS_URL);
     } catch(err){
       setConn(false);
-      line("hermes", "Apertura WebSocket fallita: " + err.message, "err-line");
+      line("hermes", "WebSocket opening failed: " + err.message, "err-line");
       if (running) scheduleReconnect();
       return;
     }
@@ -557,8 +569,8 @@
       speakingTurn = null;
       setConn(false);
       if (running){
-        setState("listening");                  // non è un errore: stiamo solo riconnettendo
-        hint.textContent = "Connessione persa, riprovo…";
+        setState("listening");                  // Reconnecting.
+        hint.textContent = "Connection lost, retrying…";
       } else {
         setState("error");
       }
@@ -566,7 +578,7 @@
     socket.onerror = () => {
       if (ws !== socket) return;
       setConn(false);
-      line("hermes", "Errore WebSocket: connessione al bridge rifiutata (ricarica la pagina)", "err-line");
+      line("hermes", "WebSocket error: connection to the bridge refused (reload the page)", "err-line");
     };
     socket.onmessage = ev => {
       if (ws !== socket) return;
@@ -576,7 +588,7 @@
                  (typeof Blob !== "undefined" && ev.data instanceof Blob)){
         handleBinaryFrame(ev.data);
       } else {
-        rejectProtocol("Formato audio non supportato ignorato.");
+        rejectProtocol("Unsupported audio format ignored.");
       }
     };
   }
@@ -593,10 +605,11 @@
     lastPlaybackTurn = turn;
     interruptPendingTurn = turn;
     sendJson({type:"interrupt", turn});
+    clearPttHeld();
     playing = true;
   }
 
-  // —— wake lock: lo schermo resta acceso ——
+  // —— wake lock: keep the screen on ——
   async function lockScreen(){
     try { wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
     document.addEventListener("visibilitychange", async () => {
@@ -614,7 +627,8 @@
       connect();
       startBtn.classList.add("hidden");
       stopBtn.classList.remove("hidden");
-      hint.textContent = wakePhrase ? `In ascolto. Di' «${wakePhrase}».` : "Collegamento in corso, carico la frase di sveglia…";
+      pttBtn.classList.remove("hidden");
+      hint.textContent = wakePhrase ? `Listening. Say “${wakePhrase}”.` : "Connecting, loading the wake phrase…";
       setState("listening");
       keepalive = setInterval(() => {
         if (!ws || ws.readyState !== 1) return;
@@ -631,11 +645,12 @@
       }, 5000);
     } catch(err){
       setState("error");
-      line("hermes", "Microfono non disponibile: " + err.message, "err-line");
-      hint.textContent = "Serve HTTPS o l'origine autorizzata (chrome://flags).";
+      line("hermes", "Microphone unavailable: " + err.message, "err-line");
+      hint.textContent = "HTTPS or the authorized origin is needed (chrome://flags).";
     }
   }
   function stop(){
+    clearPttHeld();
     running = false;
     clearInterval(keepalive);
     clearTimeout(reconnectTimer);
@@ -648,9 +663,34 @@
     setConn(false); setState("idle");
     startBtn.classList.remove("hidden");
     stopBtn.classList.add("hidden");
-    hint.textContent = wakePhrase ? `Dimmi «${wakePhrase}» per parlare. Tieni lo schermo acceso e il telefono in carica.` : "Avvia l'ascolto per caricare la frase configurata.";
+    pttBtn.classList.add("hidden");
+    hint.textContent = wakePhrase ? `Say “${wakePhrase}” to talk. Keep the screen on and the phone charging.` : "Start listening to load the configured wake phrase.";
   }
   let keepalive = null;
+
+  function clearPttHeld(){
+    pttHeld = false;
+    pttBtn.classList.remove("held");
+    pttBtn.textContent = "Hold to talk";
+  }
+  function releasePtt(){
+    if (!pttHeld) return;
+    clearPttHeld();
+    sendJson({type:"ptt", phase:"up"});
+  }
+  pttBtn.addEventListener("pointerdown", ev => {
+    if (pttHeld || !running || !ws || ws.readyState !== 1 || playing || currentState !== "listening") return;
+    ev.preventDefault();
+    pttHeld = true;
+    pttBtn.classList.add("held");
+    pttBtn.textContent = "Release to send";
+    pttBtn.setPointerCapture(ev.pointerId);
+    sendJson({type:"ptt", phase:"down"});
+  });
+  pttBtn.addEventListener("pointerup", releasePtt);
+  pttBtn.addEventListener("pointercancel", releasePtt);
+  pttBtn.addEventListener("lostpointercapture", releasePtt);
+  pttBtn.addEventListener("contextmenu", ev => ev.preventDefault());
 
   startBtn.onclick = start;
   stopBtn.onclick = stop;
@@ -666,7 +706,7 @@
       const r = await fetch("usage"); if (!r.ok) return;
       const u = await r.json();
       const el = document.getElementById("monthUsage"); if (!el) return;
-      el.textContent = "Mese " + u.month + ": " + u.turns + " turni \u00b7 " + u.realtime_min + " min audio a pagamento"
+      el.textContent = `Month ${u.month}: ${u.turns} turns · ${u.realtime_min} min paid audio`
         + (u.est_eur != null ? " \u00b7 ~\u20ac" + u.est_eur : "");
     } catch(e){}
   }

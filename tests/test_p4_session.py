@@ -232,7 +232,7 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             return HermesReply(text, session_id + "-done")
         with patch.object(sessions._dispatch, "open_stream", return_value=(None, False)), \
              patch.object(sessions._dispatch, "transcribe_turn", side_effect=transcribe), \
-             patch.object(sessions._dispatch, "command_for_turn", side_effect=lambda text, *args: text), \
+             patch.object(sessions._dispatch, "command_for_turn", side_effect=lambda text, *args, **kwargs: text), \
              patch.object(sessions, "save_turn_audio", return_value=Path("fake.wav")), \
              patch.object(sessions, "stream_hermes", side_effect=stream), \
              patch.object(voice, "tts", side_effect=lambda text, settings: text.encode()):

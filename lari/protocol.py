@@ -1,7 +1,7 @@
 """Public satellite WebSocket protocol (JSON metadata + binary audio).
 
 Inbound: PCM16 little-endian, 16 kHz mono binary frames; JSON ping,
-playback_done (turn, status=completed|failed), interrupt (turn), and diag
+playback_done (turn, status=completed|failed), interrupt (turn), ptt (phase=down|up), and diag
 (ctx, rate, mic, frames, vis, raw). Unknown/malformed JSON is ignored.
 Outbound: the fifteen constructors below. audio_chunk/audio metadata precedes
 one binary MP3 frame; audio_end ends the segmented reading. Turn identifiers
@@ -33,7 +33,9 @@ def parse_input(raw: str) -> dict | None:
     except (ValueError, TypeError):
         return None
     if not isinstance(data, dict) or data.get("type") not in (
-            "ping", "playback_done", "interrupt", "diag"):
+            "ping", "playback_done", "interrupt", "ptt", "diag"):
+        return None
+    if data["type"] == "ptt" and data.get("phase") not in ("down", "up"):
         return None
     return data
 
@@ -41,13 +43,13 @@ def parse_input(raw: str) -> dict | None:
 def state(*, state: State, turn=_MISSING, followup=_MISSING, phrase=_MISSING,
           provider=_MISSING, voice=_MISSING, sensitivity=_MISSING,
           confirm_frames=_MISSING, interrupted=_MISSING, note=_MISSING,
-          error=_MISSING) -> dict:
+          error=_MISSING, manual=_MISSING) -> dict:
     if state not in STATES:
         raise ValueError(f"unknown semantic state: {state}")
     return _message(
         "state", state=state, turn=turn, followup=followup, phrase=phrase,
         provider=provider, voice=voice, sensitivity=sensitivity,
-        confirm_frames=confirm_frames, interrupted=interrupted, note=note, error=error,
+        confirm_frames=confirm_frames, interrupted=interrupted, note=note, error=error, manual=manual,
     )
 
 

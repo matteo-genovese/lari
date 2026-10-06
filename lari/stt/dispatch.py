@@ -67,8 +67,9 @@ async def transcribe_realtime_or_batch(pcm: np.ndarray, realtime, turn: int,
     return text
 
 
-def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None, *, settings: Settings) -> str | None:
+def decode_utterance(pcm: np.ndarray, followup: bool, backend: str | None = None, *, settings: Settings, manual=False) -> str | None:
     """Transcribe and filter the wake; None = speech not addressed to the bridge."""
+    followup = followup or manual
     backend = validate_stt_backend(settings.stt_backend if backend is None else backend)
     if backend == "vosk":
         # The grammar only looks at the start: it does not distort free transcription.
@@ -105,13 +106,13 @@ async def open_stream(on_partial, *, settings: Settings):
         return None, True
 
 
-async def transcribe_turn(pcm, stream, turn, followup, start_failed=False, *, settings: Settings):
+async def transcribe_turn(pcm, stream, turn, followup, start_failed=False, *, settings: Settings, manual=False):
     validate_stt_backend(settings.stt_backend)
     if settings.stt_backend == realtime_backend.REALTIME_BACKEND:
         text, _ = await _transcribe_realtime_or_batch(
             pcm, stream, turn, start_failed=start_failed, settings=settings)
     elif settings.stt_backend == "vosk":
-        text = await asyncio.to_thread(decode_utterance, pcm, followup, settings=settings)
+        text = await asyncio.to_thread(decode_utterance, pcm, followup or manual, settings=settings)
     else:
         text = await asyncio.to_thread(stt_transcribe, pcm, settings)
     if text is None or (settings.stt_backend != "vosk" and not text):
@@ -119,14 +120,16 @@ async def transcribe_turn(pcm, stream, turn, followup, start_failed=False, *, se
     return text
 
 
-def command_for_turn(text, followup, local_wake_confirmed, settings: Settings):
+def command_for_turn(text, followup, local_wake_confirmed, settings: Settings, manual=False):
     validate_stt_backend(settings.stt_backend)
     if settings.stt_backend == "vosk":
         return text
     if settings.stt_backend == realtime_backend.REALTIME_BACKEND:
+        if manual:
+            return text.strip()
         if followup:
             return text.strip()
         if local_wake_confirmed:
             return resolve_vosk_command(text, wake=True, followup=False, cfg=settings.wake_config)
         return resolve_command(text, 0.0, time.monotonic(), settings.wake_config)
-    return resolve_command(text, float("inf") if followup else 0.0, time.monotonic(), settings.wake_config)
+    return resolve_command(text, float("inf") if (followup or manual) else 0.0, time.monotonic(), settings.wake_config)

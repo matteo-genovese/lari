@@ -96,6 +96,9 @@ class WakeWorker:
 
     def _launch_local_candidate(self, candidate: bytes) -> bool:
         """Apply local wake/follow-up policy and schedule exactly one turn."""
+        if self._manual_claim.is_set():
+            log.info("candidato wake ignorato: turno manuale attivo")
+            return False
         if not candidate:
             return False
         followup = time.monotonic() < self.conversation_until and not self.awaiting_playback
@@ -109,7 +112,7 @@ class WakeWorker:
                 log.info("candidato scartato dal secondo gate locale")
                 self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
                 return False
-        if self.echo_muted(time.time(), self._settings.echo_mute_s):
+        if self._manual_claim.is_set() or self.echo_muted(time.time(), self._settings.echo_mute_s):
             return False
         self.last_wake = time.time()
         self.state = "waking"

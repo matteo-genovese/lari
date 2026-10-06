@@ -38,6 +38,7 @@ class SessionAudio:
     """Per-session audio state; VAD reads the session's immutable Settings."""
 
     def _init_audio(self):
+        self._utterance_close = threading.Event()
         self.frames = bytearray()          # frame-alignment residue
         self.noise_floor = 500.0
         self.last_silent = time.time()
@@ -66,7 +67,7 @@ class SessionAudio:
         if not wait_for_gate:
             return bytes(candidate)
         target = int(2.5 * SAMPLE_RATE * 2)
-        while len(candidate) < target and not self.stop.is_set():
+        while len(candidate) < target and not self.stop.is_set() and not self._manual_claim.is_set():
             try:
                 chunk = self.recv_queue.get(timeout=0.2)
             except queue.Empty:
@@ -129,6 +130,9 @@ class SessionAudio:
                 elif started:
                     idle_s += dt
         while time.time() < t_end_max:
+            if self._utterance_close.is_set():
+                log.info("PTT: rilascio, chiudo l'utterance")
+                break
             try:
                 chunk = await asyncio.to_thread(self.recv_queue.get, True, 0.2)
             except queue.Empty:
@@ -187,6 +191,8 @@ class SessionAudio:
                 break
         pcm = np.frombuffer(bytes(collected), dtype=np.int16)
         log.info("VAD: raccolti %.2fs (parlato %.2fs, started=%s)", len(pcm) / SAMPLE_RATE, voiced_s, started)
+        if self._utterance_close.is_set():
+            return pcm
         # Never trim the head: the pre-roll contains the wake, often quieter
         # than the command. The previous energy trim removed the wake phrase,
         # leaving only "what's the weather tomorrow...", which the regex then

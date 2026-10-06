@@ -27,6 +27,7 @@ def _chunk(rms: float, seconds: float = 0.1) -> bytes:
 def _session(noise_floor: float = 363.0) -> session_module.Session:
     s = session_module.Session.__new__(session_module.Session)
     s._settings = get_settings()
+    s._init_audio()
     s.recv_queue = queue.Queue()
     s.noise_floor = noise_floor
     s.last_silent = time.time() - 0.5    # recent silence, as at real speech onset
