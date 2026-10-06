@@ -292,7 +292,7 @@ class RealtimeScribe:
             return False
         seconds = len(pcm) / _PCM_BYTES_PER_SECOND
         try:
-            allowed = self.budget.reserve(seconds)
+            allowed = await asyncio.to_thread(self.budget.reserve, seconds)
         except Exception:
             self._error = RealtimeUnavailable("realtime usage ledger unavailable")
             return False
