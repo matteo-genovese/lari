@@ -127,7 +127,7 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 - `LARI_PORT`: listener port (default `8643`).
 - `LARI_HERMES_API`, `LARI_HERMES_KEY`: Hermes API endpoint and optional key.
 - `LARI_HERMES_ROOT`: Hermes source/install tree used only by the optional features that need it (defaults to `~/.hermes/hermes-agent`).
-- `LARI_HERMES_PROVIDER`, `LARI_HERMES_MODEL`: per-satellite agent model without changing Telegram's model.
+- `LARI_HERMES_PROVIDER`, `LARI_HERMES_MODEL`: leave empty to follow the Hermes profile's default model/provider; set non-empty values to request per-satellite overrides.
 - `LARI_SESSION_KEY`: names the Hermes conversation carried by the satellite (default `lari`); changing its value starts a fresh memory.
 - `LARI_STT_BACKEND`: `whisper` (local faster-whisper, default), `vosk` (local Vosk), `elevenlabs_realtime` (streaming cloud), or a batch provider: `elevenlabs`, `groq`, `openai`. Cloud backends need their matching key (`ELEVENLABS_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`); local backends need none.
 - `LARI_STT_MODEL`, `LARI_STT_LANG`: local fallback model and language.

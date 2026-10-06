@@ -31,8 +31,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.realtime_daily_seconds, 600.0)
         self.assertEqual(settings.stt_backend, "whisper")
         self.assertEqual(settings.stt_model, "base")
+        self.assertEqual(settings.hermes_provider, "")
+        self.assertEqual(settings.hermes_model, "")
         self.assertEqual(settings.tts_voice, "it-IT-ElsaNeural")
         self.assertIsNone(settings.usage_eur_per_min)
+
+    def test_hermes_overrides_are_stripped(self):
+        for provider, model in [(' deepseek ', ' deepseek-flash '), ('   ', '   ')]:
+            with self.subTest(provider=provider, model=model):
+                settings = config.load_settings({
+                    'LARI_HERMES_PROVIDER': provider, 'LARI_HERMES_MODEL': model,
+                })
+                self.assertEqual(settings.hermes_provider, provider.strip())
+                self.assertEqual(settings.hermes_model, model.strip())
 
     def test_settings_are_immutable(self):
         settings = config.load_settings({})

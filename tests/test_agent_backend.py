@@ -1,6 +1,7 @@
 """Hermes requests, session continuity, streaming and approvals."""
 import asyncio
 import json
+import subprocess
 import unittest
 from unittest.mock import AsyncMock, patch
 import httpx
@@ -21,7 +22,7 @@ class AgentDispatchTests(unittest.TestCase):
     def setUp(self):
         self.settings = load_settings({})
 
-    def test_hermes_request_pins_provider_and_model(self):
+    def test_hermes_request_uses_gateway_defaults_when_unset(self):
         requests = []
         def handler(request):
             requests.append(request)
@@ -30,16 +31,59 @@ class AgentDispatchTests(unittest.TestCase):
         real_client = httpx.AsyncClient
         def client(*args, **kwargs):
             return real_client(*args, transport=transport, **kwargs)
-        with patch('httpx.AsyncClient', side_effect=client), \
-             patch.object(self, 'settings', replace(self.settings, hermes_provider='deepseek')), \
-             patch.object(self, 'settings', replace(self.settings, hermes_model='deepseek-flash')):
+        with patch('httpx.AsyncClient', side_effect=client):
             out = asyncio.run(hermes_client.ask_hermes('ciao', settings=self.settings))
         self.assertEqual(out, 'Ciao!')
         self.assertEqual(len(requests), 1)
-        body = __import__('json').loads(requests[0].content)
+        body = json.loads(requests[0].content)
+        self.assertNotIn('model', body)
+        self.assertNotIn('provider', body)
+        self.assertEqual(body['model_options']['reasoning'], {'enabled': False})
+        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], self.settings.session_key)
+
+    def test_hermes_request_pins_configured_provider_and_model(self):
+        self.settings = load_settings({
+            'LARI_HERMES_PROVIDER': 'deepseek',
+            'LARI_HERMES_MODEL': 'deepseek-flash',
+        })
+        requests = []
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={'choices': [{'message': {'content': ' Ciao! '}}]})
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        def client(*args, **kwargs):
+            return real_client(*args, transport=transport, **kwargs)
+        with patch('httpx.AsyncClient', side_effect=client):
+            out = asyncio.run(hermes_client.ask_hermes('ciao', settings=self.settings))
+        self.assertEqual(out, 'Ciao!')
+        self.assertEqual(len(requests), 1)
+        body = json.loads(requests[0].content)
         self.assertEqual((body['provider'], body['model']), ('deepseek', 'deepseek-flash'))
         self.assertEqual(body['model_options']['reasoning'], {'enabled': False})
         self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], self.settings.session_key)
+
+    def test_cli_fallback_only_passes_configured_model_and_provider(self):
+        cases = [
+            ({}, []),
+            ({'LARI_HERMES_MODEL': 'deepseek-flash'}, ['-m', 'deepseek-flash']),
+            ({'LARI_HERMES_PROVIDER': 'deepseek'}, ['--provider', 'deepseek']),
+            ({'LARI_HERMES_PROVIDER': 'deepseek', 'LARI_HERMES_MODEL': 'deepseek-flash'},
+             ['-m', 'deepseek-flash', '--provider', 'deepseek']),
+        ]
+        for env, overrides in cases:
+            with self.subTest(env=env):
+                settings = load_settings(env)
+                with patch('subprocess.run', return_value=subprocess.CompletedProcess(
+                        [], 0, stdout=' Ciao! ', stderr='')) as run:
+                    self.assertEqual(hermes_client._ask_cli('ciao', settings), 'Ciao!')
+                run.assert_called_once_with(
+                    [str(settings.hermes_root / 'venv/bin/hermes'), 'chat', '-q', 'ciao', '-Q',
+                     *overrides, '--reasoning', 'none', '--continue', settings.session_key,
+                     '--create-if-missing'],
+                    capture_output=True, text=True, timeout=settings.cli_timeout_s,
+                    cwd=str(settings.hermes_root), stdin=subprocess.DEVNULL,
+                )
 
     def test_session_continuity_uses_response_id_on_next_turn(self):
         requests = []
@@ -238,9 +282,41 @@ class HermesStreamingTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         body = __import__('json').loads(requests[0].content)
         self.assertEqual(body['stream'], True)
-        self.assertEqual((body['provider'], body['model']), ('deepseek', 'deepseek-flash'))
+        self.assertNotIn('model', body)
+        self.assertNotIn('provider', body)
         self.assertEqual(body['model_options']['reasoning'], {'enabled': False})
         self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], self.settings.session_key)
+
+    def test_stream_request_pins_configured_provider_and_model(self):
+        settings = load_settings({
+            'LARI_HERMES_PROVIDER': 'deepseek',
+            'LARI_HERMES_MODEL': 'deepseek-flash',
+        })
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, stream=_SplitStream([
+                b'data: {"choices":[{"delta":{"content":"Ciao!"},"finish_reason":"stop"}]}\n\n',
+                b'data: [DONE]\n\n',
+            ]))
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+
+        def client(*args, **kwargs):
+            return real_client(*args, transport=transport, **kwargs)
+
+        with patch.object(httpx, 'AsyncClient', side_effect=client):
+            reply = asyncio.run(hermes_client.stream_hermes('ciao', settings=settings))
+
+        self.assertEqual(reply, 'Ciao!')
+        self.assertEqual(len(requests), 1)
+        body = json.loads(requests[0].content)
+        self.assertEqual((body['provider'], body['model']), ('deepseek', 'deepseek-flash'))
+        self.assertTrue(body['stream'])
+        self.assertEqual(body['model_options']['reasoning'], {'enabled': False})
+        self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], settings.session_key)
 
     def test_stream_continuity_uses_session_id_only_after_done(self):
         requests = []

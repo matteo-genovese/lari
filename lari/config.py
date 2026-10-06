@@ -127,8 +127,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         hermes_api=env.get("LARI_HERMES_API", "http://127.0.0.1:8642"),
         hermes_key=env.get("LARI_HERMES_KEY", ""),
         session_key=env.get("LARI_SESSION_KEY", "lari"),
-        hermes_provider=env.get("LARI_HERMES_PROVIDER", "deepseek"),
-        hermes_model=env.get("LARI_HERMES_MODEL", "deepseek-flash"),
+        # Empty values use the model/provider configured in the Hermes profile.
+        hermes_provider=env.get("LARI_HERMES_PROVIDER", "").strip(),
+        hermes_model=env.get("LARI_HERMES_MODEL", "").strip(),
         voice_system=env.get(
             "LARI_VOICE_SYSTEM",
             "Sei l'assistente vocale di un assistente personale. Le battute ti arrivano da un "

@@ -1,4 +1,7 @@
-"""Hermes HTTP/SSE transport and CLI fallback for unavailable connections."""
+"""Hermes HTTP/SSE transport and CLI fallback for unavailable connections.
+
+Empty model/provider settings use the gateway's configured default model/provider.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +17,14 @@ from .events import (
 )
 
 log = logging.getLogger("lari")
+
+
+def _model_overrides(settings: Settings) -> dict:
+    """Omit empty values so the gateway uses its configured default model/provider."""
+    return {key: value for key, value in {
+        "model": settings.hermes_model,
+        "provider": settings.hermes_provider,
+    }.items() if value}
 
 
 class HermesContinuationError(RuntimeError):
@@ -37,14 +48,14 @@ async def ask_hermes(
 ) -> HermesReply:
     """Send the utterance to the agent, continuing ``session_id`` when present.
 
+    Empty model/provider settings use the gateway's configured defaults.
     The return value remains string-compatible for existing callers and carries the
     response's ``X-Hermes-Session-Id`` as ``.session_id``.
     """
     import httpx
 
     payload = {
-        "model": settings.hermes_model,
-        "provider": settings.hermes_provider,
+        **_model_overrides(settings),
         "model_options": {"reasoning": {"enabled": False}},
         "messages": [
             {"role": "system", "content": settings.voice_system},
@@ -86,6 +97,7 @@ async def stream_hermes(
 ) -> HermesReply:
     """Stream one opt-in Hermes turn over SSE.
 
+    Empty model/provider settings use the gateway's configured defaults.
     Only ``delta.content`` is speech. Reasoning, tool/status events, and approval
     metadata are kept out of the returned text. The response session/run ids are
     published only after the terminal ``[DONE]`` frame, so callers can retain
@@ -97,8 +109,7 @@ async def stream_hermes(
     import httpx
 
     payload = {
-        "model": settings.hermes_model,
-        "provider": settings.hermes_provider,
+        **_model_overrides(settings),
         "model_options": {"reasoning": {"enabled": False}},
         "messages": [
             {"role": "system", "content": settings.voice_system},
@@ -168,16 +179,24 @@ async def stream_hermes(
 
 
 def _ask_cli(text: str, settings: Settings) -> str:
-    """Fallback without the API server. stdin=DEVNULL: an approval prompt must
+    """Fallback without the API server; empty model/provider settings use the
+    configured Hermes profile defaults, just as the gateway does.
+
+    stdin=DEVNULL: an approval prompt must
     fail immediately instead of hanging while waiting for a tty that does not exist."""
     import subprocess as sp
 
+    argv = [str(settings.hermes_root / "venv/bin/hermes"), "chat", "-q", text, "-Q"]
+    if settings.hermes_model:
+        argv.extend(["-m", settings.hermes_model])
+    if settings.hermes_provider:
+        argv.extend(["--provider", settings.hermes_provider])
+    argv.extend(["--reasoning", "none", "--continue", settings.session_key,
+                 "--create-if-missing"])
     t0 = time.time()
     try:
         p = sp.run(
-            [str(settings.hermes_root / "venv/bin/hermes"), "chat", "-q", text, "-Q",
-             "-m", settings.hermes_model, "--provider", settings.hermes_provider, "--reasoning", "none",
-             "--continue", settings.session_key, "--create-if-missing"],
+            argv,
             capture_output=True, text=True, timeout=settings.cli_timeout_s, cwd=str(settings.hermes_root),
             stdin=sp.DEVNULL,
         )
@@ -190,4 +209,3 @@ def _ask_cli(text: str, settings: Settings) -> str:
         return "(il backend è lento: fai girare l'API server riavviando il gateway)"
     except Exception as exc:
         return f"(errore agente: {exc})"
-
