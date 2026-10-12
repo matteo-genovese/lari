@@ -451,6 +451,9 @@
     }
     switch (msg.type){
       case "state":
+        if (typeof msg.error === "string" && msg.error){
+          line("hermes", "Audio error: " + msg.error, "err-line");
+        }
         if (msg.phrase) wakePhrase = msg.phrase;
         if (["listening", "transcribing", "thinking", "speaking", "error"].includes(msg.state)){
           disarmTap(false);

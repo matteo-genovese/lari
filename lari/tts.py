@@ -2,25 +2,44 @@
 from __future__ import annotations
 from . import protocol
 import asyncio
+import logging
 import re
 from .config import Settings
+
+log = logging.getLogger("lari")
+TTS_ATTEMPTS = 4
+TTS_RETRY_BACKOFF_S = (0.3, 0.8, 2.0)
+MAX_CONSECUTIVE_TTS_FAILURES = 2
 
 
 class TTSUnavailable(RuntimeError):
     """Voice output failed; the public message contains no provider details."""
 
 
-async def tts(text: str, settings: Settings) -> bytes:
+async def synthesize_once(text: str, voice: str) -> bytes:
     """Use edge-tts in the caller's task so cancellation closes its stream."""
-    try:
-        import edge_tts
-        buf = bytearray()
-        async for chunk in edge_tts.Communicate(text, settings.tts_voice).stream():
-            if chunk.get("type") == "audio":
-                buf.extend(chunk["data"])
-        return bytes(buf)
-    except Exception:
-        raise TTSUnavailable("tts non disponibile") from None
+    import edge_tts
+    buf = bytearray()
+    async for chunk in edge_tts.Communicate(text, voice).stream():
+        if chunk.get("type") == "audio":
+            buf.extend(chunk["data"])
+    return bytes(buf)
+
+
+async def tts(text: str, settings: Settings) -> bytes:
+    """Retry transient synthesis failures with cancellable backoff."""
+    for attempt in range(TTS_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(TTS_RETRY_BACKOFF_S[attempt - 1])
+        try:
+            audio = await synthesize_once(text, settings.tts_voice)
+            if not audio:
+                raise TTSUnavailable("tts non disponibile")
+            return audio
+        except Exception as exc:
+            log.warning("TTS attempt %d/%d failed (%s)",
+                        attempt + 1, TTS_ATTEMPTS, type(exc).__name__)
+    raise TTSUnavailable("tts non disponibile") from None
 
 
 class SpeakableSentenceBuffer:
@@ -90,8 +109,10 @@ class SpeakableSentenceBuffer:
 class Reading:
     """One response's bounded voice queue, owned by exactly one Session.
 
-    A single worker synthesizes and sends every segment in order. After a
-    failure it drains the queue, letting Hermes finish without resubmission.
+    A single worker synthesizes and sends every segment in order. The first
+    failed segment marks the turn's error without skipping later segments.
+    A success resets the failure count; two consecutive failures drain the
+    queue, letting Hermes finish without resubmission.
     Playback completion remains the satellite's ACK, not queue completion.
     """
 
@@ -144,16 +165,25 @@ class Reading:
         self.worker = asyncio.create_task(self._run(), name=f"tts-{self.turn}")
 
     async def _run(self):
+        consecutive_failures = 0
+        segment = 0
         while True:
             sentence = await self.queue.get()
             try:
                 if sentence is None:
                     return
-                if self.error is None and self.valid():
+                segment += 1
+                # The turn error persists; only consecutive failures stop synthesis.
+                if consecutive_failures < MAX_CONSECUTIVE_TTS_FAILURES and self.valid():
                     try:
                         await self._deliver(await self._synthesize(sentence))
+                        consecutive_failures = 0
                     except Exception:
-                        self.error = TTSUnavailable("tts non disponibile")
+                        if self.error is None:
+                            self.error = TTSUnavailable("tts non disponibile")
+                        consecutive_failures += 1
+                        log.warning("TTS segment %d failed (%d consecutive failures)",
+                                    segment, consecutive_failures)
             finally:
                 self.queue.task_done()
 
