@@ -106,7 +106,7 @@ def resolve_url(env_path, explicit_url):
         return None, ""
     values = read_env(env_path)
     token = values.get("LARI_TOKEN", "")
-    port = int(values["LARI_PORT"])
+    port = int(values.get("LARI_PORT") or "8643")
     if not token or not 1 <= port <= 65535:
         raise ValueError("Invalid configuration")
     return f"http://127.0.0.1:{port}/{quote(token, safe='')}/status", token

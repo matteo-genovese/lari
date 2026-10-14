@@ -73,6 +73,28 @@ class BarStatusTests(unittest.TestCase):
         self.assertEqual(result["tooltip"],
                          "configurazione assente: usa --env, --url o LARI_ENV")
 
+    def test_missing_or_empty_port_uses_bridge_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            for port_line in ("", "LARI_PORT=\n"):
+                with self.subTest(port_line=port_line):
+                    env.write_text(port_line + "LARI_TOKEN=test-secret\n", encoding="utf-8")
+                    result = self.run_config_cli(
+                        ("--env", str(env)),
+                        expected_url="http://127.0.0.1:8643/test-secret/status")
+                    self.assertEqual(result["class"], "listening")
+
+    def test_invalid_port_is_offline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            for port in ("invalid", "-1", "0", "65536"):
+                with self.subTest(port=port):
+                    env.write_text(f"LARI_PORT={port}\nLARI_TOKEN=test-secret\n",
+                                   encoding="utf-8")
+                    result = self.run_config_cli(("--env", str(env)))
+                    self.assertEqual(result["class"], "offline")
+                    self.assertEqual(result["tooltip"], "Bridge non disponibile")
+
     def test_invalid_urls_are_offline(self):
         invalid_urls = ["", "not-a-url", "ftp://bridge.example/test-secret/status",
                         "https://bridge.example/status",

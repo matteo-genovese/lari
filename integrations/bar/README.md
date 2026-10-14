@@ -27,6 +27,7 @@ Non c'è un percorso predefinito. Usare ad esempio `--env '<repo>/.env'`,
 sostituendo `<repo>` con il percorso del repository, oppure impostare
 `LARI_ENV=~/.config/lari/env` nell'ambiente della barra.
 Il file viene letto come dati, senza eseguire comandi shell.
+`LARI_PORT` è facoltativa: se assente o vuota, il default è `8643`.
 Il token non viene mostrato nell'output o negli errori.
 
 Per un bridge remoto, `--url` sostituisce la lettura dell'`.env`: deve contenere
