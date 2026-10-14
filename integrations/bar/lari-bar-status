@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Poll the bridge status and emit one Waybar-compatible line."""
+
+import argparse
+import html
+import json
+import os
+from pathlib import Path
+import re
+from urllib.parse import quote, unquote, urlsplit
+from urllib.request import urlopen
+
+
+DEFAULT_GLYPH = ""
+BUSY_STATES = {"thinking", "speaking", "transcribing", "waking", "recording"}
+STATES = BUSY_STATES | {"idle", "listening", "error"}
+
+
+def fetch_status(url):
+    """HTTP boundary: tests can replace this function without using the network."""
+    with urlopen(url, timeout=2) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def status_to_waybar(payload, glyph=DEFAULT_GLYPH):
+    """Convert a version-1 payload to a dictionary ready for JSON serialization."""
+    if (not isinstance(payload, dict) or type(payload.get("version")) is not int
+            or payload["version"] != 1
+            or not isinstance(payload.get("phrase"), str)
+            or not isinstance(payload.get("stt_backend"), str)
+            or not isinstance(payload.get("devices"), list)):
+        raise ValueError("Invalid status payload")
+    connected = []
+    for device in payload["devices"]:
+        if (not isinstance(device, dict)
+                or not isinstance(device.get("device"), str)
+                or type(device.get("connected")) is not bool
+                or not isinstance(device.get("state"), str)
+                or type(device.get("turn")) is not int):
+            raise ValueError("Invalid device payload")
+        if device["connected"]:
+            connected.append(device)
+    text = f"{glyph} {len(connected)}" if len(connected) > 1 else glyph
+    if not connected:
+        return {"text": text, "tooltip": "Nessun satellite connesso", "class": "idle"}
+    states = {device["state"] for device in connected}
+    if states & BUSY_STATES:
+        css_class = "busy"
+    elif "error" in states or states - STATES:
+        css_class = "error"
+    elif "listening" in states:
+        css_class = "listening"
+    else:
+        css_class = "idle"
+    lines = [f"Frase di wake: {one_line(payload['phrase'])}",
+             f"STT: {one_line(payload['stt_backend'])}"]
+    for device in connected:
+        state = device["state"] if device["state"] in STATES else "stato sconosciuto"
+        lines.append(f"{one_line(device['device'])}: {state}")
+    return {"text": text, "tooltip": "\n".join(lines), "class": css_class}
+
+
+def one_line(value):
+    return " ".join(value.split())
+
+
+def read_env(path):
+    """Read the two dotenv values as data; never execute shell expressions."""
+    values = {}
+    for line in Path(path).expanduser().read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        if separator and key.strip() in {"LARI_PORT", "LARI_TOKEN"}:
+            value = value.strip()
+            if value.startswith(("'", '"')):
+                closing = value.find(value[0], 1)
+                if closing < 0:
+                    raise ValueError("Invalid configuration")
+                value = value[1:closing]
+            else:
+                value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+            values[key.strip()] = value
+    return values
+
+
+def resolve_url(env_path, explicit_url):
+    if explicit_url is None:
+        if env_path is None:
+            env_path = os.environ.get("LARI_ENV") or None
+        if env_path is None:
+            explicit_url = os.environ.get("LARI_STATUS_URL") or None
+    if explicit_url is not None:
+        parsed = urlsplit(explicit_url)
+        parts = parsed.path.rstrip("/").split("/")
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment or len(parts) < 3
+                or parts[-1] != "status" or not parts[-2]):
+            raise ValueError("Invalid status URL")
+        # Accessing port also validates malformed port values.
+        parsed.port
+        return explicit_url, unquote(parts[-2])
+    if env_path is None:
+        return None, ""
+    values = read_env(env_path)
+    token = values.get("LARI_TOKEN", "")
+    port = int(values["LARI_PORT"])
+    if not token or not 1 <= port <= 65535:
+        raise ValueError("Invalid configuration")
+    return f"http://127.0.0.1:{port}/{quote(token, safe='')}/status", token
+
+
+def redact(result, token):
+    if not token:
+        return result
+    secrets = {token, quote(token, safe=""), quote(token, safe="").lower()}
+    return {key: redact_text(value, secrets) for key, value in result.items()}
+
+
+def redact_text(value, secrets):
+    for secret in sorted(secrets, key=len, reverse=True):
+        value = value.replace(secret, "[redacted]")
+    return value
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env", help="dotenv file (or use LARI_ENV)")
+    parser.add_argument("--url", help="complete bridge status URL")
+    parser.add_argument("--plain", action="store_true", help="print a readable line")
+    parser.add_argument("--glyph", default=DEFAULT_GLYPH, help="microphone glyph")
+    args = parser.parse_args(argv)
+    token = ""
+    try:
+        url, token = resolve_url(args.env, args.url)
+        if url is None:
+            result = {"text": one_line(args.glyph),
+                      "tooltip": "configurazione assente: usa --env, --url o LARI_ENV",
+                      "class": "offline"}
+        else:
+            result = status_to_waybar(fetch_status(url), one_line(args.glyph))
+    except Exception:
+        # Never expose exception messages: they may contain the authenticated URL.
+        result = {"text": one_line(args.glyph) if token else DEFAULT_GLYPH,
+                  "tooltip": "Bridge non disponibile", "class": "offline"}
+    result = redact(result, token)
+    if args.plain:
+        print(f"{result['text']} [{result['class']}] {one_line(result['tooltip'])}")
+    else:
+        # Waybar tooltips support Pango markup; device names and phrases are data.
+        result["tooltip"] = html.escape(result["tooltip"])
+        print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
