@@ -8,6 +8,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import copy_context
 from functools import partial
 
 from ..config import Settings
@@ -89,7 +90,8 @@ async def ask_hermes(
             raise HermesContinuationError("continuazione Hermes non disponibile") from None
         log.warning("API server non raggiungibile (%s), fallback hermes chat -q", type(exc).__name__)
         loop = asyncio.get_running_loop()
-        return HermesReply(await loop.run_in_executor(None, cli_fallback or partial(_ask_cli, settings=settings), text))
+        call = cli_fallback or partial(_ask_cli, settings=settings)
+        return HermesReply(await loop.run_in_executor(None, copy_context().run, call, text))
 
 
 async def stream_hermes(
@@ -189,7 +191,9 @@ async def stream_hermes(
             type(exc).__name__,
         )
         loop = asyncio.get_running_loop()
-        reply = HermesReply(await loop.run_in_executor(None, partial(_ask_cli, settings=settings), text))
+        reply = HermesReply(await loop.run_in_executor(
+            None, copy_context().run, partial(_ask_cli, settings=settings), text,
+        ))
         if on_delta is not None:
             await on_delta(str(reply))
         return reply

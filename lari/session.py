@@ -2,12 +2,14 @@
 from __future__ import annotations
 from . import protocol
 import asyncio
+from dataclasses import replace
 import logging
 import queue
 import threading
 from threading import Thread
 import time
 from .config import Settings
+from .device import device_logs, validate_device
 from .audio import SessionAudio, save_turn_audio
 from .wake.runtime import WakeWorker
 from .stt import dispatch as _dispatch
@@ -30,8 +32,13 @@ class Session(SessionAudio, WakeWorker):
     Immutable Settings may be shared; mutable connection state is never shared.
     """
 
-    def __init__(self, send_json, send_audio, *, settings: Settings, usage_ledger: usage.UsageLedger | None = None):
+    def __init__(self, send_json, send_audio, *, settings: Settings, usage_ledger: usage.UsageLedger | None = None, device: str = "default"):
+        self.device = validate_device(device)
         self._settings = settings
+        self._hermes_settings = settings if device == "default" else replace(
+            settings, session_key=f"{settings.session_key}-{device}",
+        )
+        self.log = logging.LoggerAdapter(log, {"device": self.device})
         self.usage_ledger = usage_ledger or usage.UsageLedger(settings=settings)
         self._send_audio = send_audio
         self._send_json = send_json
@@ -104,6 +111,7 @@ class Session(SessionAudio, WakeWorker):
     async def interrupt(self, turn=None) -> bool:
         return await self.interrupt_current_turn(self.active_turn if turn is None else turn)
 
+    @device_logs
     async def disconnect(self):
         """Stop ingress, cancel owned work and await all transport cleanup."""
         self.stop.set()
@@ -146,7 +154,7 @@ class Session(SessionAudio, WakeWorker):
         try:
             self.save_calibration()
         except Exception:
-            log.exception("salvataggio calibrazione fallito")
+            self.log.exception("salvataggio calibrazione fallito")
 
     async def _send_partial(self, text: str, turn: int):
         if not self._reading_valid(turn):
@@ -162,11 +170,12 @@ class Session(SessionAudio, WakeWorker):
         self._partial_turn = None
         await self.send_json(protocol.partial_transcript(text="", turn=partial_turn))
 
+    @device_logs
     async def _ask_hermes(self, text: str) -> str:
         """Ask Hermes and update only this session's transcript id."""
         turn = self.turn
         result = await ask_hermes(
-            text, settings=self._settings, session_id=self.hermes_session_id,
+            text, settings=self._hermes_settings, session_id=self.hermes_session_id,
         )
         returned_id = getattr(result, "session_id", None)
         if returned_id and self.turn == turn and not self.stop.is_set():
@@ -259,7 +268,7 @@ class Session(SessionAudio, WakeWorker):
             ):
                 return
             self.conversation_until = time.monotonic() + self._settings.followup_s
-            log.info("turno %d: follow-up post-interruzione attivo per %.0fs", turn, self._settings.followup_s)
+            self.log.info("turno %d: follow-up post-interruzione attivo per %.0fs", turn, self._settings.followup_s)
             await self.send_json(protocol.followup(seconds=self._settings.followup_s, interrupted=True))
         except asyncio.CancelledError:
             raise
@@ -290,7 +299,7 @@ class Session(SessionAudio, WakeWorker):
         except asyncio.CancelledError:
             pass
         except Exception:
-            log.exception("errore durante l'interruzione del turno %s", current_turn)
+            self.log.exception("errore durante l'interruzione del turno %s", current_turn)
 
         await self.send_json(protocol.interrupt_ack(turn=current_turn, status="interrupted", echo_tail_ms=int(self._settings.echo_mute_s * 1000)))
         await self.set_state("listening", turn=current_turn, interrupted=True)
@@ -322,6 +331,7 @@ class Session(SessionAudio, WakeWorker):
                        self._send_audio,
                        started, audio_sent, lambda: self._reading_valid(turn), settings=self._settings)
 
+    @device_logs
     async def _stream_hermes_speak(self, text: str, turn: int) -> tuple[str, bool, bool]:
         """Read streamed response text; never reissue a partially executed turn."""
         job = asyncio.current_task()
@@ -333,7 +343,7 @@ class Session(SessionAudio, WakeWorker):
         stream_error = None
 
         async def on_approval(event):
-            log.warning("turno %d: approvazione non disponibile nel canale vocale", turn)
+            self.log.warning("turno %d: approvazione non disponibile nel canale vocale", turn)
             if self._reading_valid(turn):
                 await self.send_json(protocol.approval(turn=turn, approval=event))
             raise ApprovalNotAvailable()
@@ -341,7 +351,7 @@ class Session(SessionAudio, WakeWorker):
         try:
             try:
                 result = await stream_hermes(
-                    text, settings=self._settings, session_id=self.hermes_session_id,
+                    text, settings=self._hermes_settings, session_id=self.hermes_session_id,
                     on_delta=reading.feed, on_approval=on_approval,
                 )
             except Exception as exc:
@@ -373,13 +383,13 @@ class Session(SessionAudio, WakeWorker):
 
     async def manual_turn_start(self) -> bool:
         if self.stop.is_set():
-            log.info("PTT: pressione ignorata, sessione arrestata")
+            self.log.info("PTT: pressione ignorata, sessione arrestata")
             return False
         if self._manual_active:
-            log.info("PTT: pressione ignorata, turno manuale già attivo")
+            self.log.info("PTT: pressione ignorata, turno manuale già attivo")
             return False
         if self.state != "listening":
-            log.info("PTT: pressione ignorata, stato %s", self.state)
+            self.log.info("PTT: pressione ignorata, stato %s", self.state)
             return False
         # A short prelude bridges frames between the press and recorder start;
         # a full 1.5 s would only add silence to a paid realtime stream.
@@ -394,7 +404,7 @@ class Session(SessionAudio, WakeWorker):
         asyncio.create_task(self._on_wake(
             initial_pcm=prelude, local_wake_confirmed=False, manual=True,
         ))
-        log.info("PTT: avvio turno manuale")
+        self.log.info("PTT: avvio turno manuale")
         return True
 
     def manual_turn_end(self) -> bool:
@@ -403,6 +413,7 @@ class Session(SessionAudio, WakeWorker):
         self._utterance_close.set()
         return True
 
+    @device_logs
     async def _on_wake(self, initial_pcm: bytes = b"",
                        local_wake_confirmed: bool = False, manual: bool = False):
         if self.stop.is_set():
@@ -474,7 +485,7 @@ class Session(SessionAudio, WakeWorker):
         except Exception:
             if realtime is not None:
                 await realtime.close()
-            log.exception("errore registrazione")
+            self.log.exception("errore registrazione")
             await self._clear_partial(turn)
             await self.set_state("listening")
             return
@@ -487,9 +498,9 @@ class Session(SessionAudio, WakeWorker):
 
         try:
             saved = save_turn_audio(pcm)
-            log.info("turno %d: audio per diagnostica %s", turn, saved.name)
+            self.log.info("turno %d: audio per diagnostica %s", turn, saved.name)
         except Exception:
-            log.exception("impossibile salvare il WAV diagnostico")
+            self.log.exception("impossibile salvare il WAV diagnostico")
         await self.set_state("transcribing", turn=turn)
         try:
             text = await _dispatch.transcribe_turn(
@@ -497,7 +508,7 @@ class Session(SessionAudio, WakeWorker):
                 start_failed=realtime_start_failed, settings=self._settings, manual=manual,
             )
         except Exception as exc:
-            log.exception("STT fallito")
+            self.log.exception("STT fallito")
             await self._clear_partial(turn)
             await self.set_state("listening", error=f"stt: {exc}")
             return
@@ -508,25 +519,25 @@ class Session(SessionAudio, WakeWorker):
         if self._settings.wake_provider == "whisper":
             cmd = _dispatch.command_for_turn(text, followup_at_start, local_wake_confirmed, self._settings, manual=manual)
             if cmd is None:
-                log.info("turno %d scartato (fuori dalla conversazione): %r", turn, text[:80])
+                self.log.info("turno %d scartato (fuori dalla conversazione): %r", turn, text[:80])
                 self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
                 await self._clear_partial(turn)
                 await self.set_state("listening", note="non era per me")
                 return
             if not cmd.strip():
                 if manual:
-                    log.info("turno %d: push-to-talk senza contenuto", turn)
+                    self.log.info("turno %d: push-to-talk senza contenuto", turn)
                     await self._clear_partial(turn)
                     await self.set_state("listening", note="niente da trascrivere")
                     return
-                log.info("turno %d: sveglia senza comando", turn)
+                self.log.info("turno %d: sveglia senza comando", turn)
                 await self._clear_partial(turn)
                 await self._speak("Sì?", turn)
                 await self.set_state("listening", turn=turn)
                 return
             text = cmd.strip()
             self.conversation_until = 0.0  # next turn only after playback
-            log.info("comando %s: %r", "follow-up" if followup_at_start else "wake", text[:120])
+            self.log.info("comando %s: %r", "follow-up" if followup_at_start else "wake", text[:120])
             self._partial_turn = None
             await self.send_json(protocol.transcript(text=text, turn=turn, command=True))
         else:
@@ -541,18 +552,18 @@ class Session(SessionAudio, WakeWorker):
             reply = APPROVAL_NOT_AVAILABLE_REPLY
             tts_failed = False
         except HermesStreamStalled:
-            log.warning("turno %d: stream Hermes in stallo", turn)
+            self.log.warning("turno %d: stream Hermes in stallo", turn)
             reply = AGENT_STALLED_REPLY
             tts_failed = False
         except HermesStreamTurnError as exc:
             # The stream may already have run tools or emitted audio.  Never
             # reissue this turn through ask_hermes; surface only a safe error.
-            log.warning("turno %d: %s", turn, exc)
+            self.log.warning("turno %d: %s", turn, exc)
             reply = "Non riesco a completare la risposta."
             tts_failed = False
             stream_had_audio = exc.had_audio
         except Exception:
-            log.exception("stream Hermes fallito")
+            self.log.exception("stream Hermes fallito")
             reply = "Non riesco a completare la risposta."
             tts_failed = False
         await self.send_json(protocol.reply(text=reply, turn=turn))
@@ -583,7 +594,7 @@ class Session(SessionAudio, WakeWorker):
         else:
             await self.set_state("listening", turn=turn)
         self._record_usage()
-        log.info("turno %d completato in %.1fs", turn, time.time() - t_turn)
+        self.log.info("turno %d completato in %.1fs", turn, time.time() - t_turn)
         return
 
     async def _speak(self, text: str, turn: int):
@@ -597,7 +608,7 @@ class Session(SessionAudio, WakeWorker):
         except TTSUnavailable:
             if reading.started:
                 self.mark_playback_done(turn=turn, status="failed")
-            log.exception("TTS fallito")
+            self.log.exception("TTS fallito")
             await self.set_state("listening", turn=turn, error="tts non disponibile")
         finally:
             await reading.cancel()
@@ -618,6 +629,6 @@ class Session(SessionAudio, WakeWorker):
                 local_turns=0 if paid else 1,
             )
         except Exception:
-            log.exception("impossibile registrare l'usage")
+            self.log.exception("impossibile registrare l'usage")
         finally:
             self._turn_paid_s = 0.0

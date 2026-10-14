@@ -37,6 +37,9 @@ def save_turn_audio(pcm: np.ndarray, directory: Path | None = None,
 class SessionAudio:
     """Per-session audio state; VAD reads the session's immutable Settings."""
 
+    # Standalone audio helpers retain their logger; Session supplies its adapter.
+    log = log
+
     def _init_audio(self):
         self._utterance_close = threading.Event()
         self.frames = bytearray()          # frame-alignment residue
@@ -131,7 +134,7 @@ class SessionAudio:
                     idle_s += dt
         while time.time() < t_end_max:
             if self._utterance_close.is_set():
-                log.info("PTT: rilascio, chiudo l'utterance")
+                self.log.info("PTT: rilascio, chiudo l'utterance")
                 break
             try:
                 chunk = await asyncio.to_thread(self.recv_queue.get, True, 0.2)
@@ -166,10 +169,10 @@ class SessionAudio:
                     self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
                     self.last_silent = time.time()
                     threshold = max(self._settings.vad_min_rms, self.noise_floor * self._settings.vad_noise_mult)
-                    log.info("VAD: floor adattato al rumore ambiente -> soglia %.0f", threshold)
+                    self.log.info("VAD: floor adattato al rumore ambiente -> soglia %.0f", threshold)
             if rms >= threshold:
                 if not started:
-                    log.info("VAD: parlato rilevato (rms=%.0f soglia=%.0f)", rms, threshold)
+                    self.log.info("VAD: parlato rilevato (rms=%.0f soglia=%.0f)", rms, threshold)
                 started = True
                 idle_s = 0.0
                 voiced_s += dt
@@ -184,13 +187,13 @@ class SessionAudio:
             else:
                 idle_s += dt
                 if idle_s >= self._settings.idle_abort_s:
-                    log.info("VAD: abort, nessun parlato entro %.1fs", self._settings.idle_abort_s)
+                    self.log.info("VAD: abort, nessun parlato entro %.1fs", self._settings.idle_abort_s)
                     return None
             if idle_s >= self._settings.silence_end_s and (
                     voiced_s >= self._settings.min_speech_s or idle_s >= self._settings.silence_end_s + 2.0):
                 break
         pcm = np.frombuffer(bytes(collected), dtype=np.int16)
-        log.info("VAD: raccolti %.2fs (parlato %.2fs, started=%s)", len(pcm) / SAMPLE_RATE, voiced_s, started)
+        self.log.info("VAD: raccolti %.2fs (parlato %.2fs, started=%s)", len(pcm) / SAMPLE_RATE, voiced_s, started)
         if self._utterance_close.is_set():
             return pcm
         # Never trim the head: the pre-roll contains the wake, often quieter
@@ -205,7 +208,7 @@ class SessionAudio:
             if float(np.sqrt(np.mean(pcm[i:i + win].astype(np.float32) ** 2))) >= thr:
                 end = min(len(pcm), i + 2 * win)
                 break
-        log.info("VAD: utterance tagliata %.2fs -> %.2fs",
+        self.log.info("VAD: utterance tagliata %.2fs -> %.2fs",
                  len(pcm) / SAMPLE_RATE, (end - start) / SAMPLE_RATE)
         return pcm[start:end]
 
@@ -240,5 +243,5 @@ class SessionAudio:
                        key=lambda path: path.stat().st_mtime_ns)
         for old in older[:-7]:
             old.unlink()
-        log.info("calibrazione salvata: %s (%.1fs)", dest.name, len(data) / 2 / SAMPLE_RATE)
+        self.log.info("calibrazione salvata: %s (%.1fs)", dest.name, len(data) / 2 / SAMPLE_RATE)
         return dest

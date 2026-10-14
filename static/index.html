@@ -114,7 +114,10 @@
 <script>
 (() => {
   const TOKEN = location.pathname.split("/")[1] || "";
-  const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/${TOKEN}/ws`;
+  const DEVICE_PARAM = new URLSearchParams(location.search).get("device");
+  const DEVICE = DEVICE_PARAM === null ? "" : DEVICE_PARAM.trim().toLowerCase();
+  const DEVICE_VALID = /^[a-z0-9][a-z0-9-]{0,31}$/.test(DEVICE);
+  const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/${TOKEN}/ws${DEVICE_VALID ? "?device=" + encodeURIComponent(DEVICE) : ""}`;
 
   const $ = id => document.getElementById(id);
   const orb = $("orb"), label = $("label"), log = $("log"), dot = $("dot"), connTxt = $("connTxt");
@@ -198,6 +201,9 @@
     d.lastChild.textContent = text;
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
+  }
+  if (DEVICE_PARAM !== null && !DEVICE_VALID){
+    line("hermes", "Invalid or empty device name; using default.");
   }
   function partial(text, turn){
     if (partialTurn !== turn){

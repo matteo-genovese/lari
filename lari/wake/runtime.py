@@ -1,5 +1,6 @@
 """Per-satellite wake frame processing; no application-global event loop."""
 from .. import protocol
+from ..device import device_logs
 import asyncio
 import logging
 import queue
@@ -13,19 +14,20 @@ log = logging.getLogger("lari")
 
 
 class WakeWorker:
+    @device_logs
     def wake_worker(self):
         self.engine = None
         if self._settings.wake_provider != "whisper":
             try:
                 self.engine = make_engine(self._settings)
             except Exception:
-                log.exception("impossibile creare l'engine wake")
+                self.log.exception("impossibile creare l'engine wake")
                 asyncio.run_coroutine_threadsafe(
                     self.send_json(protocol.fatal(error="wake engine startup failed")), self.loop
                 )
                 return
         else:
-            log.info("wake provider=whisper: VAD energia + gate Vosk locale")
+            self.log.info("wake provider=whisper: VAD energia + gate Vosk locale")
         buf = bytearray()
         speech_streak = 0
         stat_t = time.time()
@@ -34,7 +36,7 @@ class WakeWorker:
         while not self.stop.is_set():
             st = self.state
             if time.time() - stat_t >= 5.0:
-                log.info("audio: %d frame/5s, rms peak %.0f, noise floor %.0f, state=%s",
+                self.log.info("audio: %d frame/5s, rms peak %.0f, noise floor %.0f, state=%s",
                          stat_frames, stat_peak, self.noise_floor, st)
                 stat_t, stat_frames, stat_peak = time.time(), 0, 0.0
             if st in ("waking", "recording"):
@@ -74,7 +76,7 @@ class WakeWorker:
                     try:
                         hit = self.engine.process(arr)
                     except Exception:
-                        log.exception("errore engine")
+                        self.log.exception("errore engine")
                         hit = False
                 now = time.time()
                 if hit and self.echo_muted(now, self._settings.echo_mute_s):
@@ -97,7 +99,7 @@ class WakeWorker:
     def _launch_local_candidate(self, candidate: bytes) -> bool:
         """Apply local wake/follow-up policy and schedule exactly one turn."""
         if self._manual_claim.is_set():
-            log.info("candidato wake ignorato: turno manuale attivo")
+            self.log.info("candidato wake ignorato: turno manuale attivo")
             return False
         if not candidate:
             return False
@@ -105,11 +107,11 @@ class WakeWorker:
         if not followup:
             pcm = np.frombuffer(candidate, dtype=np.int16)
             if not vosk_wake(pcm, self._settings.wake_config):
-                log.info("candidato parlato scartato dal gate Vosk locale")
+                self.log.info("candidato parlato scartato dal gate Vosk locale")
                 self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
                 return False
             if self._settings.wake_confirm and not confirm_candidate(pcm, self._settings.wake_config, model=self._settings.stt_model, language=self._settings.stt_lang):
-                log.info("candidato scartato dal secondo gate locale")
+                self.log.info("candidato scartato dal secondo gate locale")
                 self.last_wake = time.time() + self._settings.ambient_pause_s - COOLDOWN_S
                 return False
         if self._manual_claim.is_set() or self.echo_muted(time.time(), self._settings.echo_mute_s):
@@ -126,4 +128,3 @@ class WakeWorker:
             self._scheduled.add(future)
         future.add_done_callback(self._scheduled.discard)
         return True
-

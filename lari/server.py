@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, Response
 
 from .config import get_settings
 from .session import Session
+from .device import validate_device
 from .usage import UsageLedger
 from . import protocol
 
@@ -157,13 +158,32 @@ async def usage_summary(token: str):
     return Response(content=json.dumps(summary), media_type="application/json")
 
 
+@app.get("/{token}/status")
+async def satellite_status(token: str):
+    if not TOKEN or token != TOKEN:
+        return Response(status_code=403)
+    devices = sorted(
+        ({"device": s.device, "connected": True, "state": s.state, "turn": s.turn}
+         for s in _sessions),
+        key=lambda item: (item["device"], item["state"], item["turn"]),
+    )
+    return {"version": 1, "phrase": _SETTINGS.wake_config.display,
+            "stt_backend": _SETTINGS.stt_backend, "devices": devices}
+
+
 @app.websocket("/{token}/ws")
-async def ws_endpoint(token: str, websocket: WebSocket):
+async def ws_endpoint(token: str, websocket: WebSocket, device: str = "default"):
     if not TOKEN or token != TOKEN:
         await websocket.close(code=4403)
         return
+    try:
+        validate_device(device)
+    except ValueError:
+        await websocket.close(code=4403)
+        return
     await websocket.accept()
-    log.info("client connesso da %s", websocket.client)
+    session_log = logging.LoggerAdapter(log, {"device": device})
+    session_log.info("client connesso da %s", websocket.client)
 
     async def send_json(data):
         try:
@@ -174,7 +194,7 @@ async def ws_endpoint(token: str, websocket: WebSocket):
     async def send_audio(chunk):
         await websocket.send_bytes(chunk)
 
-    session = Session(send_json, send_audio, settings=_SETTINGS, usage_ledger=USAGE_LEDGER)
+    session = Session(send_json, send_audio, settings=_SETTINGS, usage_ledger=USAGE_LEDGER, device=device)
     _sessions.add(session)
     try:
         await session.start()
@@ -201,15 +221,17 @@ async def ws_endpoint(token: str, websocket: WebSocket):
                     else:
                         session.manual_turn_end()
                 elif data["type"] == "diag":
-                    log.info("diag phone: %s", data)
+                    session_log.info("diag: %s", data)
     except WebSocketDisconnect:
         pass
     except Exception:
-        log.exception("websocket error")
+        session_log.exception("websocket error")
     finally:
-        await session.disconnect()
         _sessions.discard(session)
-        log.info("sessione chiusa")
+        try:
+            await session.disconnect()
+        finally:
+            session_log.info("sessione chiusa")
 
 
 @app.on_event("startup")
