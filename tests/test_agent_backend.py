@@ -2,6 +2,8 @@
 import asyncio
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
 import httpx
@@ -20,7 +22,8 @@ async def send_audio(chunk):
 
 class AgentDispatchTests(unittest.TestCase):
     def setUp(self):
-        self.settings = load_settings({})
+        root = self.enterContext(tempfile.TemporaryDirectory())
+        self.settings = load_settings({"LARI_SESSION_STATE": str(Path(root) / "sessions.json")})
 
     def test_hermes_request_uses_gateway_defaults_when_unset(self):
         requests = []
@@ -138,7 +141,7 @@ class AgentDispatchTests(unittest.TestCase):
             return real_client(*args, transport=transport, **kwargs)
 
         async def turns():
-            sessions = [Session(AsyncMock(), send_audio, settings=self.settings), Session(AsyncMock(), send_audio, settings=self.settings)]
+            sessions = [Session(AsyncMock(), send_audio, settings=self.settings, device="phone"), Session(AsyncMock(), send_audio, settings=self.settings, device="desktop")]
             await asyncio.gather(
                 sessions[0]._ask_hermes('a-first'), sessions[1]._ask_hermes('b-first'))
             await asyncio.gather(
@@ -208,7 +211,8 @@ class _SplitStream(httpx.AsyncByteStream):
 
 class HermesStreamingTests(unittest.TestCase):
     def setUp(self):
-        self.settings = load_settings({})
+        root = self.enterContext(tempfile.TemporaryDirectory())
+        self.settings = load_settings({"LARI_SESSION_STATE": str(Path(root) / "sessions.json")})
 
     @staticmethod
     def split_frame(frame, sizes=(1, 2, 5, 3)):
@@ -494,7 +498,9 @@ class HermesStreamingTests(unittest.TestCase):
 class BoundedTurnTests(unittest.IsolatedAsyncioTestCase):
     async def run_stream_turn(self, frames, expected_reply, *, hold_open=False,
                               keepalives=False, delay=0):
-        settings = load_settings({'LARI_AGENT_STALL_S': '0.2'})
+        root = self.enterContext(tempfile.TemporaryDirectory())
+        settings = load_settings({'LARI_AGENT_STALL_S': '0.2',
+                                  'LARI_SESSION_STATE': str(Path(root) / 'sessions.json')})
         requests = []
         closed = asyncio.Event()
         finalized = asyncio.Event()
@@ -618,7 +624,8 @@ class BoundedTurnTests(unittest.IsolatedAsyncioTestCase):
 
 class SegmentedPlaybackTests(unittest.TestCase):
     def setUp(self):
-        self.settings = load_settings({})
+        root = self.enterContext(tempfile.TemporaryDirectory())
+        self.settings = load_settings({"LARI_SESSION_STATE": str(Path(root) / "sessions.json")})
 
     def test_sentence_buffer_waits_for_words_and_splits_at_punctuation_or_limit(self):
         buffer = tts_module.SpeakableSentenceBuffer(max_chars=14, total_limit=100)
@@ -637,7 +644,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(value):
             sent.append(value)
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None, on_session_id=None):
             self.assertIsNone(session_id)
             await on_delta('Prima frase. ')
             await on_delta('Seconda frase.')
@@ -668,7 +675,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
             binary.append(chunk)
         sent = []
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None, on_session_id=None):
             await on_delta('Una risposta.')
             return hermes_client.HermesReply('Una risposta.', 'completed-id')
 
@@ -695,7 +702,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         sent = []
         calls = []
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None, on_session_id=None):
             calls.append(text)
             await on_delta('Parziale.')
             raise RuntimeError('sensitive transport detail')
@@ -746,7 +753,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
         async def send_json(value):
             sent.append(value)
 
-        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None):
+        async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None, on_session_id=None):
             stream_calls.append(text)
             await on_delta('Prima frase.')
             try:

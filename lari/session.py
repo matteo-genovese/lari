@@ -9,6 +9,7 @@ import threading
 from threading import Thread
 import time
 from .config import Settings
+from .session_state import SessionState, valid_session_id
 from .device import device_logs, validate_device
 from .audio import SessionAudio, save_turn_audio
 from .wake.runtime import WakeWorker
@@ -64,6 +65,7 @@ class Session(SessionAudio, WakeWorker):
         self.active_turn: int | None = None
         self._turn_task: asyncio.Task | None = None
         self.hermes_session_id: str | None = None
+        self._session_state = SessionState(self._hermes_settings)
         self._partial_turn: int | None = None
         self._reading: Reading | None = None
         self._realtime = None
@@ -172,15 +174,41 @@ class Session(SessionAudio, WakeWorker):
 
     @device_logs
     async def _ask_hermes(self, text: str) -> str:
-        """Ask Hermes and update only this session's transcript id."""
+        """Ask Hermes using the device's durable transcript id."""
         turn = self.turn
-        result = await ask_hermes(
-            text, settings=self._hermes_settings, session_id=self.hermes_session_id,
-        )
+        result = await self._hermes_request(ask_hermes, text, turn)
         returned_id = getattr(result, "session_id", None)
-        if returned_id and self.turn == turn and not self.stop.is_set():
+        if self._settings.session_resume and valid_session_id(returned_id) and self.turn == turn and not self.stop.is_set():
             self.hermes_session_id = returned_id
         return str(result)
+
+    async def _hermes_request(self, request, text: str, turn: int, **kwargs):
+        """Read at dispatch, retry only an explicit 4xx rejection before a body."""
+        import httpx
+
+        session_id = self._session_state.get()
+        header_received = False
+
+        def received_id(value):
+            nonlocal header_received
+            header_received = True
+            if self._reading_valid(turn):
+                self._session_state.save(value)
+
+        try:
+            result = await request(text, settings=self._hermes_settings,
+                                   session_id=session_id, on_session_id=received_id, **kwargs)
+        except httpx.HTTPStatusError as exc:
+            if not session_id or not 400 <= exc.response.status_code < 500:
+                raise
+            self._session_state.forget(session_id)
+            self.hermes_session_id = None
+            result = await request(text, settings=self._hermes_settings,
+                                   session_id=None, on_session_id=received_id, **kwargs)
+        # String-compatible mocked/alternate transports may only return the id.
+        if not header_received:
+            received_id(getattr(result, "session_id", None))
+        return result
 
     def _begin_playback(self, turn: int):
         self.awaiting_playback = True
@@ -350,8 +378,8 @@ class Session(SessionAudio, WakeWorker):
 
         try:
             try:
-                result = await stream_hermes(
-                    text, settings=self._hermes_settings, session_id=self.hermes_session_id,
+                result = await self._hermes_request(
+                    stream_hermes, text, turn,
                     on_delta=reading.feed, on_approval=on_approval,
                 )
             except Exception as exc:
@@ -369,7 +397,7 @@ class Session(SessionAudio, WakeWorker):
             raise HermesStreamTurnError("stream Hermes non disponibile", reading.started) from None
         if self._reading_valid(turn):
             returned_id = getattr(result, "session_id", None)
-            if returned_id:
+            if self._settings.session_resume and valid_session_id(returned_id):
                 self.hermes_session_id = returned_id
         return str(result), reading.started, reading.error is not None
 

@@ -37,6 +37,8 @@ class Settings:
     hermes_api: str
     hermes_key: str = field(repr=False)
     session_key: str
+    session_state: Path
+    session_resume: bool
     hermes_provider: str
     hermes_model: str
     voice_system: str
@@ -132,6 +134,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         hermes_api=env.get("LARI_HERMES_API", "http://127.0.0.1:8642"),
         hermes_key=env.get("LARI_HERMES_KEY", ""),
         session_key=env.get("LARI_SESSION_KEY", "lari"),
+        session_state=Path(env.get("LARI_SESSION_STATE") or (
+            Path(env.get("XDG_STATE_HOME") or (Path.home() / ".local/state"))
+            / "lari/sessions.json"
+        )).expanduser(),
+        session_resume=_bool(env, "LARI_SESSION_RESUME", "1"),
         # Empty values use the model/provider configured in the Hermes profile.
         hermes_provider=env.get("LARI_HERMES_PROVIDER", "").strip(),
         hermes_model=env.get("LARI_HERMES_MODEL", "").strip(),

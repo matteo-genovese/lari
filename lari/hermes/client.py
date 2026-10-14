@@ -50,6 +50,7 @@ async def ask_hermes(
     session_id: str | None = None,
     *,
     cli_fallback: Callable[[str], str] | None = None,
+    on_session_id: Callable[[str], None] | None = None,
 ) -> HermesReply:
     """Send the utterance to the agent, continuing ``session_id`` when present.
 
@@ -79,13 +80,17 @@ async def ask_hermes(
         async with httpx.AsyncClient(timeout=settings.agent_timeout_s) as client:
             r = await client.post(f"{settings.hermes_api}/v1/chat/completions", json=payload, headers=headers)
             r.raise_for_status()
+            if on_session_id is not None and r.headers.get("X-Hermes-Session-Id"):
+                on_session_id(r.headers["X-Hermes-Session-Id"])
             data = r.json()
             reply = (data["choices"][0]["message"]["content"] or "").strip()
             return HermesReply(reply, r.headers.get("X-Hermes-Session-Id"))
     except Exception as exc:  # API server down -> CLI fallback
+        if session_id and isinstance(exc, httpx.HTTPStatusError) and 400 <= exc.response.status_code < 500:
+            raise  # The session owner forgets the rejected id and retries once.
         if session_id:
             # A CLI continuation has different state semantics. Keep the explicit
-            # transcript id private to this WebSocket and surface a concise error.
+            # transcript id and surface a concise error.
             log.warning("continuità Hermes fallita (%s)", type(exc).__name__)
             raise HermesContinuationError("continuazione Hermes non disponibile") from None
         log.warning("API server non raggiungibile (%s), fallback hermes chat -q", type(exc).__name__)
@@ -100,6 +105,7 @@ async def stream_hermes(
     session_id: str | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     on_approval: Callable[[dict], Awaitable[None]] | None = None,
+    on_session_id: Callable[[str], None] | None = None,
 ) -> HermesReply:
     """Stream one opt-in Hermes turn over SSE.
 
@@ -108,6 +114,8 @@ async def stream_hermes(
     metadata are kept out of the returned text. The response session/run ids are
     published only after the terminal ``[DONE]`` frame, so callers can retain
     their previous transcript on any failed or incomplete stream.
+    ``on_session_id`` receives successful response headers immediately, allowing
+    durable continuation even if playback or the stream is later interrupted.
 
     An initial turn may fall back to CLI only when connecting fails before the
     request can be sent. Once the stream opens, never submit the turn again.
@@ -159,6 +167,8 @@ async def stream_hermes(
                 stream_opened = True
                 response.raise_for_status()
                 response_session_id = response.headers.get("X-Hermes-Session-Id")
+                if response_session_id and on_session_id is not None:
+                    on_session_id(response_session_id)
                 last_semantic_event = time.monotonic()
 
                 lines = response.aiter_lines().__aiter__()

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlencode
@@ -27,7 +28,9 @@ def mock_http(handler):
 
 class MultiDeviceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        root = self.enterContext(tempfile.TemporaryDirectory())
         self.settings = load_settings({
+            "LARI_SESSION_STATE": str(Path(root) / "sessions.json"),
             "LARI_TOKEN": "test-token", "LARI_SESSION_KEY": "test-session",
             "LARI_HERMES_KEY": "test-api-key",
         })

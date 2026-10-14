@@ -5,6 +5,7 @@ from lari.config import get_settings
 import asyncio
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,6 +20,11 @@ from lari.stt.realtime import RealtimeScribe
 
 
 class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        root = self.enterContext(tempfile.TemporaryDirectory())
+        settings = replace(get_settings(), session_state=Path(root) / "sessions.json")
+        self.enterContext(patch(__name__ + ".get_settings", return_value=settings))
+
     async def test_binary_audio_callable_preserves_bytes_and_protocol_order(self):
         events = []
         chunks = [b"ID3\x00\xff\x01", b"\xff\xfb\x00\x02"]
@@ -165,11 +171,13 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             audio[index].append(chunk)
         async def send(index, message):
             messages[index].append(message)
-        first = Session(lambda message: send(0, message), lambda chunk: send_audio(0, chunk), settings=get_settings())
-        second = Session(lambda message: send(1, message), lambda chunk: send_audio(1, chunk), settings=get_settings())
+        first = Session(lambda message: send(0, message), lambda chunk: send_audio(0, chunk), settings=get_settings(), device="phone")
+        second = Session(lambda message: send(1, message), lambda chunk: send_audio(1, chunk), settings=get_settings(), device="desktop")
         first.turn = first.active_turn = 7
         second.turn = second.active_turn = 9
         first.hermes_session_id, second.hermes_session_id = "first", "second"
+        first._session_state.save("first")
+        second._session_state.save("second")
         both = asyncio.Event()
         count = 0
 
@@ -219,10 +227,12 @@ class SessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
             messages[index].append(message)
             if message["type"] == "audio_end":
                 ended[index].set()
-        first = Session(lambda message: send(0, message), AsyncMock(), settings=get_settings())
-        second = Session(lambda message: send(1, message), AsyncMock(), settings=get_settings())
+        first = Session(lambda message: send(0, message), AsyncMock(), settings=get_settings(), device="phone")
+        second = Session(lambda message: send(1, message), AsyncMock(), settings=get_settings(), device="desktop")
         first.turn, second.turn = 3, 8
         first.hermes_session_id, second.hermes_session_id = "one", "two"
+        first._session_state.save("one")
+        second._session_state.save("two")
         first._record_utterance = AsyncMock(return_value=np.ones(16000, dtype=np.int16))
         second._record_utterance = AsyncMock(return_value=np.full(16000, 2, dtype=np.int16))
         async def transcribe(pcm, *args, **kwargs):
