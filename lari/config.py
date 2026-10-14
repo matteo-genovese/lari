@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -9,6 +10,7 @@ from functools import cache
 from pathlib import Path
 
 from .wake.config import WakeConfig, build_wake_config, default_phrase
+from .device import validate_device
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -33,6 +35,7 @@ class Settings:
     hermes_root: Path
     token: str = field(repr=False)
     desktop_url: str = field(repr=False)
+    device: str
     port: int
     hermes_api: str
     hermes_key: str = field(repr=False)
@@ -47,7 +50,6 @@ class Settings:
     stt_backend: str
     vosk_model_dir: Path
     stt_lang: str
-    stt_gate: str
     # Mode selector: non-whisper values are forwarded to the optional Hermes engine.
     wake_provider: str
     wake_confirm: bool
@@ -117,6 +119,13 @@ def _bool(env, name, default):
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Read and validate a mapping without mutating it or the environment."""
     env = os.environ if environ is None else environ
+    device = env.get("LARI_DEVICE", "")
+    if device:
+        try:
+            validate_device(device)
+        except ValueError:
+            logging.getLogger(__name__).warning("LARI_DEVICE: nome non valido; ignorato.")
+            device = ""
     stt_backend = validate_stt_backend(env.get("LARI_STT_BACKEND", "whisper").strip())
     phrase = env.get("LARI_WAKE_PHRASE", "").strip() or default_phrase(
         env.get("LARI_STT_LANG", "")
@@ -130,6 +139,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         hermes_root=Path(env.get("LARI_HERMES_ROOT") or (Path.home() / ".hermes" / "hermes-agent")).expanduser(),
         token=env.get("LARI_TOKEN", "").strip(),
         desktop_url=env.get("LARI_DESKTOP_URL", "").strip(),
+        device=device,
         port=_number(env, 'LARI_PORT', '8643', int, minimum=1, maximum=65535),
         hermes_api=env.get("LARI_HERMES_API", "http://127.0.0.1:8642"),
         hermes_key=env.get("LARI_HERMES_KEY", ""),
@@ -158,7 +168,6 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         stt_backend=stt_backend,
         vosk_model_dir=Path(env.get("LARI_VOSK_MODEL_DIR", str(BASE_DIR / "models/vosk-model-small-it-0.22"))),
         stt_lang=env.get("LARI_STT_LANG", "it").strip(),
-        stt_gate=env.get("LARI_STT_GATE", "").strip(),
         wake_provider=env.get("LARI_WAKE_PROVIDER", "whisper"),
         wake_confirm=_bool(env, 'LARI_WAKE_CONFIRM', "1"),
         wake_sensitivity=_number(env, 'LARI_SENSITIVITY', '0.5', float, maximum=1),

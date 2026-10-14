@@ -10,9 +10,10 @@ import json
 import signal
 import sys
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from .config import load_settings
+from .device import validate_device
 
 ROOT = Path(__file__).resolve().parent.parent
 ACTIVE_STATES = {"waking", "recording", "transcribing", "thinking", "speaking"}
@@ -24,23 +25,41 @@ def should_open_popup(previous, current, connected):
 
 def satellite_url(settings):
     remote = getattr(settings, "desktop_url", "")
+    device = getattr(settings, "device", "")
     if remote:
         try:
             parsed = urlsplit(remote)
+            query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            seen = set()
+            for name, value in query:
+                if name in seen:
+                    raise ValueError("duplicate parameter")
+                seen.add(name)
+                if name == "device":
+                    validate_device(value)
+                elif name != "raw" or value != "1":
+                    raise ValueError("invalid parameter")
             valid_port = parsed.port is None or 1 <= parsed.port <= 65535
             secure = parsed.scheme == "https" or (
                 parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"})
             valid = (secure and parsed.hostname and valid_port and not parsed.username
-                     and not parsed.password and not parsed.fragment and not parsed.query
+                     and not parsed.password and not parsed.fragment
                      and len(parsed.path.strip("/").split("/")) == 1 and parsed.path.strip("/"))
         except ValueError:
             valid = False
         if not valid:
             raise ValueError("LARI_DESKTOP_URL: usa l’URL completo del satellite HTTPS con token.")
-        return remote.rstrip("/") + "/"
+        if device:
+            query = [(name, value) for name, value in query if name != "device"]
+            query.append(("device", device))
+        return urlunsplit(parsed._replace(
+            path=parsed.path.rstrip("/") + "/",
+            query=urlencode(query) if device else parsed.query,
+        ))
     if not settings.token:
         raise ValueError("Imposta LARI_TOKEN nel file .env prima di avviare Lari.")
-    return f"http://127.0.0.1:{settings.port}/{quote(settings.token, safe='')}/"
+    url = f"http://127.0.0.1:{settings.port}/{quote(settings.token, safe='')}/"
+    return url + "?" + urlencode({"device": device}) if device else url
 
 
 def main():

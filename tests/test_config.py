@@ -32,10 +32,29 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.agent_stall_s, 120.0)
         self.assertEqual(settings.stt_backend, "whisper")
         self.assertEqual(settings.stt_model, "base")
+        self.assertEqual(settings.device, "")
         self.assertEqual(settings.hermes_provider, "")
         self.assertEqual(settings.hermes_model, "")
         self.assertEqual(settings.tts_voice, "it-IT-ElsaNeural")
         self.assertIsNone(settings.usage_eur_per_min)
+
+    def test_device_names_use_bridge_validation_without_failing_startup(self):
+        for device in ("desktop", "phone-2", "0", "a" * 32):
+            with self.subTest(device=device):
+                self.assertEqual(config.load_settings({"LARI_DEVICE": device}).device, device)
+        for device in ("../etc", "Desktop", " desktop ", "-desktop", "a" * 33):
+            with self.subTest(device=device), self.assertLogs("lari.config", level="WARNING"):
+                self.assertEqual(config.load_settings({"LARI_DEVICE": device}).device, "")
+
+    def test_obsolete_stt_gate_is_not_read_or_exposed(self):
+        class Environment(dict):
+            def get(self, name, default=None):
+                if name == "LARI_STT_GATE":
+                    raise AssertionError("obsolete setting must not be read")
+                return super().get(name, default)
+
+        settings = config.load_settings(Environment(LARI_STT_GATE="unused"))
+        self.assertFalse(hasattr(settings, "stt_gate"))
 
     def test_hermes_overrides_are_stripped(self):
         for provider, model in [(' deepseek ', ' deepseek-flash '), ('   ', '   ')]:
