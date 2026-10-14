@@ -28,7 +28,10 @@ class DebugWavCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.pcm = b'\x01\x00' * 16000
         session = Mock(recent_lock=threading.Lock(), recent=self.pcm)
         stack.enter_context(patch.object(server, '_sessions', {session}))
-        self.scope = {'type': 'http', 'method': 'GET', 'headers': []}
+        # These tests exercise send errors directly. ASGI 2.4 reports disconnects
+        # through send(); older versions require a live receive() coroutine.
+        self.scope = {'type': 'http', 'method': 'GET', 'headers': [],
+                      'asgi': {'spec_version': '2.4'}}
 
     def assert_empty(self):
         self.assertEqual(list(self.directory.iterdir()), [])

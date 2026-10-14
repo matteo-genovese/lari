@@ -61,7 +61,10 @@ assert "lari.server" not in sys.modules
             for name in names:
                 with self.subTest(function=name):
                     self.assertEqual(reference["functions"][file][name],
-                                     ast.dump(current[name], include_attributes=False))
+                                     # Python 3.12 adds an empty generics field;
+                                     # keep the 3.11 reference without masking logic.
+                                     ast.dump(current[name], include_attributes=False)
+                                     .replace(", type_params=[]", ""))
         # Freeze configuration bytes as well as function logic.
         self.assertEqual(hashlib.sha256((ROOT / "lari/wake/config.py").read_bytes()).hexdigest(),
                          reference["sha256"]["lari/wake/config.py"])

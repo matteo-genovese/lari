@@ -125,6 +125,53 @@ Expose it **only** through a private network with HTTPS (for example, Tailscale 
 
 ## Runtime settings
 
+### Linux desktop satellite
+
+Lari can also live in the desktop system tray. It starts listening at login,
+keeps the microphone active with the popup closed, and opens the conversation
+popup with the animated flame when the local wake gate accepts your phrase
+(including follow-up turns). The compact panel sits below the system bar,
+without a regular application window or taskbar entry, and hides when you click
+elsewhere.
+The tray menu opens/hides the popup, suspends/resumes the microphone, and quits
+the satellite. Closing the window only hides it; **Suspend listening** releases
+the microphone. Hermes remains the assistant brain and must be configured.
+
+Use Python 3.11/3.12 for the server and desktop dependencies:
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements-desktop.txt
+# Complete the model and .env setup described above, then:
+.venv/bin/python scripts/install_desktop.py
+```
+
+The installer creates user systemd services `lari-server` and `lari-desktop`,
+plus a launcher. The desktop bridge binds only to `127.0.0.1`; the native host
+permits microphone access only to that local origin. No paid STT is selected by
+the installer. Existing `.env` values are preserved.
+
+To use a bridge already running on another machine, set `LARI_DESKTOP_URL` in
+the private `.env` to its complete HTTPS satellite URL (including the token),
+then rerun the desktop installer. The local bridge service is disabled in this
+mode. Your PC provides the microphone and speaker; wake, STT, TTS and Hermes
+run on the remote bridge, which also supplies the wake phrase and conversation
+memory. The native host grants microphone access only to that configured
+origin and adapts older reference pages locally to the compact flame popup.
+
+```bash
+lari-desktop                    # Open the running popup (one instance)
+lari-desktop --toggle-listening  # Suspend/resume capture
+lari-desktop --status            # Connection, state and captured-frame count
+systemctl --user restart lari-server lari-desktop
+systemctl --user disable --now lari-desktop lari-server  # Disable autostart
+```
+
+On Hyprland, add a floating rule for app class `Lari` using your compositor's
+current syntax. The tray requires StatusNotifierItem support. Always verify a
+real wake → Hermes reply → audible playback on your microphone; unit tests
+cannot calibrate your room or confirm assistant credentials.
+
 - `LARI_TOKEN`: required secret in the URL path; rejects absent/incorrect tokens.
 - `LARI_PORT`: listener port (default `8643`).
 - `LARI_HERMES_API`, `LARI_HERMES_KEY`: Hermes API endpoint and optional key.

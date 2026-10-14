@@ -73,12 +73,22 @@
   button:active{transform:scale(.99)}
   .hint{font-size:12.5px; color:var(--dim); text-align:center}
   .hidden{display:none !important}
+  body.desktop{padding:14px; border:1px solid var(--line); border-radius:18px; overflow:hidden}
+  .desktop .stage{gap:16px; min-height:230px}
+  .desktop .orb{width:150px; height:180px}
+  .desktop .usage,.desktop .month,.desktop #stopBtn,.desktop #pttBtn{display:none !important}
+  .desktop .log{max-height:130px; min-height:42px; flex-shrink:0}
+  .desktop button{padding:10px; font-size:14px}
+  .desktop .cta .pair button{padding:10px}
+  .desktop .hint{max-height:36px; overflow:hidden; font-size:11px}
+  #desktopClose{width:26px; padding:0; border:0; background:transparent; color:var(--dim); font-size:22px; font-weight:400}
 </style>
 </head>
 <body>
   <header>
     <h1>Lare</h1>
     <div class="conn"><span class="dot" id="dot"></span><span id="connTxt">disconnected</span></div>
+    <button id="desktopClose" class="hidden" type="button" aria-label="Nascondi popup">×</button>
   </header>
 
   <div class="stage">
@@ -114,7 +124,7 @@
   const meterBar = $("meterBar"), hint = $("hint"), usageStatus = $("usageStatus");
 
   let ws = null, ctx = null, stream = null, processor = null, source = null;
-  let running = false, wakeLock = null;
+  let running = false, starting = false, startGeneration = 0, wakeLock = null;
   let connected = false, currentState = "idle", sttMode = null, sttTurn = null;
   let paidAudioThisTurn = false, followupUntil = 0, turnIsFollowup = false;
   let partialTurn = null, partialNode = null;
@@ -585,8 +595,9 @@
       if (running){
         setState("listening");                  // Reconnecting.
         hint.textContent = "Connection lost, retrying…";
+        scheduleReconnect();
       } else {
-        setState("error");
+        setState("idle");
       }
     };
     socket.onerror = () => {
@@ -635,9 +646,17 @@
   }
 
   async function start(){
+    if (running || starting) return;
+    starting = true;
+    const generation = ++startGeneration;
     disarmTap(false);
     try {
       await startMic();
+      if (generation !== startGeneration){
+        stream && stream.getTracks().forEach(t => t.stop());
+        ctx && ctx.close();
+        return;
+      }
       await lockScreen();
       running = true;
       connect();
@@ -662,12 +681,17 @@
         }));
       }, 5000);
     } catch(err){
+      stream && stream.getTracks().forEach(t => t.stop());
+      ctx && ctx.close();
       setState("error");
       line("hermes", "Microphone unavailable: " + err.message, "err-line");
       hint.textContent = "HTTPS or the authorized origin is needed (chrome://flags).";
+    } finally {
+      starting = false;
     }
   }
   function stop(){
+    ++startGeneration;
     disarmTap(false);
     clearPttHeld();
     running = false;
@@ -737,6 +761,24 @@
   startBtn.onclick = start;
   stopBtn.onclick = stop;
   interruptBtn.onclick = interruptPlayback;
+  // The native desktop host drives this same satellite; browsers stay manual.
+  let hideRequested = false;
+  window.lariDesktop = Object.freeze({
+    start, stop,
+    compact: () => {
+      document.body.classList.add("desktop");
+      $("desktopClose").classList.remove("hidden");
+      $("desktopClose").onclick = () => { hideRequested = true; };
+      document.querySelector("h1").textContent = "Lari";
+    },
+    status: () => {
+      const hide = hideRequested;
+      hideRequested = false;
+      return {running, starting, connected, state:currentState, hideRequested:hide,
+      phrase:wakePhrase, frames:window.__frames || 0,
+      error:currentState === "error" ? log.querySelector(".turn:last-child")?.textContent : null};
+    }
+  });
   setInterval(renderUsage, 1000);
   document.addEventListener("click", () => { if (ctx && ctx.state === "suspended") ctx.resume(); }, {once:false});
 })();
