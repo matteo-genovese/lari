@@ -4,15 +4,7 @@
 
 # Lari
 
-**Lari** — **A self-hosted hands-free voice satellite for Hermes**. It connects to [Hermes](https://github.com/NousResearch/hermes-agent). A phone browser acts as a microphone and speaker; Hermes remains the assistant brain. Each satellite is a **Lare**, represented by the five-state flame mascot. A dedicated hardware satellite is future work.
-
-> **Wake phrase:** one setting drives the whole pipeline. `LARI_WAKE_PHRASE` (default `ehi lari`, or `hey lari` for a non-Italian `LARI_STT_LANG`) rebuilds the command regex, the Vosk wake grammar, the junk cleanup and the provider keyterms automatically. The environment-variable prefix was renamed to `LARI_*`. Existing installs must rename the keys in their private `.env`, keeping values unchanged. Test fixtures are synthetic: real-voice calibration data is per-installation and never committed. A new phrase still deserves real-voice calibration: replay real recordings through the gate and add the observed ASR variants to `LARI_WAKE_ALIASES`.
-
-## The name
-
-Roman households kept Lares (Latin singular Lar; Italian Lare, plural Lari): the spirits who watched over the hearth and the family — every home had its own. The project is named Lari after them. Each satellite is a Lare — the device's proper name: a small hearth-spirit in flame form that keeps you company and answers when you call.
-
-In the project artwork the Lare rides on the shoulder of Hermes — the satellite and its brain.
+Lari is a self-hosted hands-free voice satellite for [Hermes](https://github.com/NousResearch/hermes-agent). A browser/PWA or the Qt desktop app supplies the microphone and speaker. Hermes owns the assistant, models, conversation memory and tools; Lari handles wake detection, audio, STT and TTS. Dedicated hardware is future work.
 
 ## How it works
 
@@ -30,87 +22,23 @@ flowchart LR
     T -->|MP3 WebSocket| B
 ```
 
-Lari does not contain its own assistant or LLM backend. Every assistant request
-passes through Hermes, including the optional Hermes CLI fallback. Hermes owns
-model selection, conversation execution and tools. Local wake, STT and TTS
-components exist because Lari is the voice layer; configured cloud speech
-providers serve that same role. A future client can use the same WebSocket
-protocol. The browser/PWA remains the reference satellite.
+Local wake detection and VAD collect an utterance before STT. Hermes receives the command and streams its reply; Lari synthesizes speech and sends MP3 audio to the satellite. Playback completion opens a local follow-up window without another wake phrase. Manual conversation buttons bypass wake detection for a turn.
 
-`server.py` is the transport adapter and the composition root: it owns the
-FastAPI/WebSocket surface and loads the settings once, then passes them
-explicitly to the runtime components. The session object owns the per-satellite
-state and orchestration and is transport-agnostic, so another client could drive
-the same voice pipeline without changing it.
+Satellites use the same WebSocket protocol. The device contract supports `?device=phone` and separate Hermes session keys; see [protocol and checkout compatibility](docs/protocol.md#device-identity-and-status).
 
-The browser displays **idle, listening, thinking, speaking and error** using individually derived animated SVG assets; `scripts/derive_mascot_states.py` rebuilds them from the editable animated source `static/assets/lare-concept.svg` (which doubles as the state-cycle demo at `/<token>/assets/lare-concept.svg`). Each asset carries only its own state's motion. `waking` and `recording` use the listening illustration, while `transcribing` uses thinking. A separate status badge distinguishes local pre-wake monitoring, the local no-wake follow-up window, pending post-wake STT, and audio actually sent to ElevenLabs. The paid-audio indication comes from the bridge **after a successful Realtime audio send**, not from a mascot state or an assumed provider connection; it is not an ElevenLabs balance or billing estimate. The wake phrase displayed in the UI comes from the initial WebSocket state frame—not from the brand or a static string. The bridge opens a provider connection only after the local wake gate confirms the utterance or a manual turn is started.
+## Requirements
 
-## WebSocket protocol
-
-Connect to `/<token>/ws`. Outgoing text frames are JSON objects with `type`;
-all names and fields below preserve the browser's existing contract. Semantic
-states are `idle`, `listening`, `waking`, `recording`, `transcribing`, `thinking`,
-`speaking`, `error`: they describe the interaction, without exposing which STT
-engine, SSE connection or TTS request is active. `stt_status` separately reports
-whether captured audio was sent to realtime STT or kept local.
-
-| Lari → browser type | Fields | Meaning |
-| --- | --- | --- |
-| `state` | `state`; optional `turn`, `followup`, `manual`, `phrase`, `provider`, `voice`, `sensitivity`, `confirm_frames`, `interrupted`, `note`, `error` | Semantic state; initial frame includes wake/voice configuration |
-| `partial_transcript` | `text`, `turn` | Provisional transcript; empty text clears it |
-| `transcript` | `text`, `turn`; optional `command` | Final user text, optionally wake-stripped |
-| `reply` | `text`, `turn` | Assistant reply from Hermes |
-| `stt_status` | `mode` (`local` or `realtime`), `turn` | Actual audio transport status |
-| `audio_start` | `turn` | Start segmented MP3 playback |
-| `audio_chunk` | `turn`, `seq` | Metadata for the next binary MP3 frame, ordered from zero |
-| `audio_end` | `turn` | No further segments for this reading |
-| `audio` | `fmt` (`mp3`), `bytes`, `turn` | Metadata for the next single binary MP3 frame |
-| `followup` | `seconds`; optional `interrupted` | Local conversation window without a new wake phrase |
-| `interrupt_ack` | `turn`, `status` (`interrupted`), `echo_tail_ms` | Active turn cancelled; wait for the speaker echo tail |
-| `interrupt_rejected` | `turn` | No matching active turn to interrupt |
-| `pong` | `state` | Liveness response with semantic state |
-| `approval` | `turn`, `approval` | Hermes approval event |
-| `fatal` | `error` | Session cannot start its wake engine |
-
-| Browser → Lari | Fields / format | Meaning |
-| --- | --- | --- |
-| Binary audio | PCM16 little-endian, 16 kHz mono int16 | Microphone frames |
-| `ping` | JSON `type` | Request `pong` |
-| `playback_done` | JSON `type`, `turn`, optional `status` (`completed` by default or `failed`) | Acknowledge actual browser playback; completion opens follow-up |
-| `interrupt` | JSON `type`, `turn` | Cancel the matching active turn |
-| `ptt` | JSON `type`, `phase` (`down` or `up`) | Press to start a manual turn; release to close the utterance |
-| `diag` | JSON `type`; `ctx`, `rate`, `mic`, `frames`, `vis`, `raw` | Browser microphone diagnostics |
-
-The phone UI offers hold-to-talk and tap-to-toggle side by side; both send the same `ptt` pair (`phase: down`, then `phase: up`).
-
-Hold-to-talk bypasses the local wake gate for that turn, and release closes the utterance; it is not voice barge-in.
-
-Turn identifiers prevent stale playback/interruption events from affecting a
-new turn. Legacy playback acknowledgements without `turn` remain accepted.
-Unknown controls and malformed JSON are ignored. All outgoing messages are
-constructed in `lari/protocol.py` with named parameters.
+Python 3.11/3.12, Hermes with its API server enabled, and an extracted Vosk model for local wake detection. The default local Whisper path also needs its model available. Mobile microphone access requires HTTPS; localhost is exempt. Desktop use adds PySide6 and a graphical session with tray support. A Hermes checkout is needed only for the optional Hermes wake engine or CLI fallback.
 
 ## Quick start
-
-Requirements: Python 3.11/3.12, Hermes with the API server enabled, a separately downloaded Italian Vosk model, and HTTPS for mobile microphone access (localhost is exempt). A Hermes source/install tree is needed only by the optional features that use it: the Hermes/openWakeWord wake engine and the Hermes CLI fallback taken when the API cannot be reached. Normal operation goes through `LARI_HERMES_API`.
-
-Run `./setup.sh` to automate everything below (virtualenv, dependencies, Italian Vosk model, a generated `LARI_TOKEN` in `.env`), or do it by hand:
 
 ```bash
 git clone https://github.com/matteo-genovese/lari.git
 cd lari
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
+./setup.sh
 ```
 
-- Download an Italian Vosk model; place its extracted folder at `models/vosk-model-small-it-0.22/` or set `LARI_VOSK_MODEL_DIR` to its absolute path. Verify `am/final.mdl` exists inside. Downloaded models are ignored by Git.
-- Generate a unique URL token with `python -c 'import secrets; print(secrets.token_urlsafe(32))'` and put it in `LARI_TOKEN` in `.env`. Never commit that file or disclose the token.
-- Configure `LARI_HERMES_API` and `LARI_HERMES_KEY` as required by your Hermes installation — this is the normal path. Set `LARI_HERMES_ROOT` only for the optional features that need a Hermes source/install tree (the openWakeWord wake engine and the CLI fallback), or to point at a nonstandard checkout.
-- The example selects local Whisper STT. To use ElevenLabs Scribe Realtime instead, set `LARI_STT_BACKEND=elevenlabs_realtime` and supply `ELEVENLABS_API_KEY` in your **private** environment. Realtime is a paid service; do not enable it by copying an example inadvertently.
-
-Run the bridge after loading your private environment:
+Review the generated private `.env`: configure the Hermes API and credentials, and keep `LARI_TOKEN` secret. Setup downloads the Italian Vosk model and installs dependencies; it preserves an existing `.env`. The template selects local Whisper STT. Then run:
 
 ```bash
 set -a
@@ -119,99 +47,27 @@ set +a
 .venv/bin/uvicorn lari.server:app --host 127.0.0.1 --port "${LARI_PORT:-8643}"
 ```
 
-Under systemd use `ExecStart=<repo>/.venv/bin/python -m lari.server` with `WorkingDirectory` set to the repository root.
+Expose the bridge through a private HTTPS network, such as Tailscale Serve. Open the token-scoped page and press **Start listening**. Keep the phone awake and the page foregrounded. The bridge can invoke Hermes tools: keep its token and network access private.
 
-Expose it **only** through a private network with HTTPS (for example, Tailscale Serve). Open `https://<your-private-host>/<your-token>/` in the phone browser and press **Start listening**. The initial red *disconnected* indicator is expected before starting the microphone/WebSocket. Keep the page foregrounded and the phone awake. Never expose this token-protected bridge directly to the open internet: it can invoke Hermes tools.
+See [installation](docs/installation.md) for manual setup, systemd, HTTPS and a WebSocket probe, or [desktop](docs/desktop.md) for the tray app.
 
-## Runtime settings
+## Documentation
 
-### Linux desktop satellite
+| Document | Contents |
+| --- | --- |
+| [Index](docs/README.md) | Documentation map |
+| [Architecture](docs/architecture.md) | Module boundaries, settings and per-session state |
+| [Installation](docs/installation.md) | Dependencies, services, HTTPS and verification |
+| [Configuration](docs/configuration.md) | Every `LARI_*` setting read by `lari/config.py` |
+| [Protocol](docs/protocol.md) | WebSocket frames, HTTP routes, device identity and status |
+| [Desktop](docs/desktop.md) | Qt host, installer, tray and remote client |
+| [Integrations](docs/integrations.md) | Status bar, Hermes tunnel and other clients |
+| [Calibration](docs/calibration.md) | Wake phrase, VAD, follow-up and echo |
+| [Troubleshooting](docs/troubleshooting.md) | Logs, probes and known failure modes |
 
-Lari can also live in the desktop system tray. It starts listening at login,
-keeps the microphone active with the popup closed, and opens the conversation
-popup with the animated flame when the local wake gate accepts your phrase
-(including follow-up turns). The compact panel sits below the system bar,
-without a regular application window or taskbar entry, and hides when you click
-elsewhere.
-The tray menu opens/hides the popup, suspends/resumes the microphone, and quits
-the satellite. Closing the window only hides it; **Suspend listening** releases
-the microphone. Hermes remains the assistant brain and must be configured.
+## The name
 
-Use Python 3.11/3.12 for the server and desktop dependencies:
-
-```bash
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -r requirements-desktop.txt
-# Complete the model and .env setup described above, then:
-.venv/bin/python scripts/install_desktop.py
-```
-
-The installer creates user systemd services `lari-server` and `lari-desktop`,
-plus a launcher. The desktop bridge binds only to `127.0.0.1`; the native host
-permits microphone access only to that local origin. No paid STT is selected by
-the installer. Existing `.env` values are preserved.
-
-To use a bridge already running on another machine, set `LARI_DESKTOP_URL` in
-the private `.env` to its complete HTTPS satellite URL (including the token),
-then rerun the desktop installer. The local bridge service is disabled in this
-mode. Your PC provides the microphone and speaker; wake, STT, TTS and Hermes
-run on the remote bridge, which also supplies the wake phrase and conversation
-memory. The native host grants microphone access only to that configured
-origin and adapts older reference pages locally to the compact flame popup.
-
-```bash
-lari-desktop                    # Open the running popup (one instance)
-lari-desktop --toggle-listening  # Suspend/resume capture
-lari-desktop --status            # Connection, state and captured-frame count
-systemctl --user restart lari-server lari-desktop
-systemctl --user disable --now lari-desktop lari-server  # Disable autostart
-```
-
-On Hyprland, add a floating rule for app class `Lari` using your compositor's
-current syntax. The tray requires StatusNotifierItem support. Always verify a
-real wake → Hermes reply → audible playback on your microphone; unit tests
-cannot calibrate your room or confirm assistant credentials.
-
-- `LARI_TOKEN`: required secret in the URL path; rejects absent/incorrect tokens.
-- `LARI_PORT`: listener port (default `8643`).
-- `LARI_HERMES_API`, `LARI_HERMES_KEY`: Hermes API endpoint and optional key.
-- `LARI_HERMES_ROOT`: Hermes source/install tree used only by the optional features that need it (defaults to `~/.hermes/hermes-agent`).
-- `LARI_HERMES_PROVIDER`, `LARI_HERMES_MODEL`: leave empty to follow the Hermes profile's default model/provider; set non-empty values to request per-satellite overrides.
-- `LARI_SESSION_KEY`: names the Hermes conversation carried by the satellite (default `lari`); changing its value starts a fresh memory.
-- `LARI_AGENT_TIMEOUT`: Hermes HTTP timeout in seconds (default `180`).
-- `LARI_AGENT_STALL_S`: maximum wait without text, tool/status or approval events (default `120.0` seconds); SSE keepalives do not reset it. A stall ends the turn with a spoken explanation. Approval requests are forwarded to the browser for observability, then the stream closes and Lari asks you to retry from Telegram; voice cannot approve commands.
-- `LARI_STT_BACKEND`: `whisper` (local faster-whisper, default), `vosk` (local Vosk), `elevenlabs_realtime` (streaming cloud), or a batch provider: `elevenlabs`, `groq`, `openai`. Cloud backends need their matching key (`ELEVENLABS_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`); local backends need none.
-- `LARI_STT_MODEL`, `LARI_STT_LANG`: local fallback model and language.
-- `LARI_VOSK_MODEL_DIR`: extracted Vosk model directory; must contain `am/final.mdl`.
-- `LARI_WAKE_PHRASE`: the wake phrase; command regex, Vosk grammar, junk cleanup and keyterms all derive from it (default `ehi lari`/`hey lari` by `LARI_STT_LANG`).
-- `LARI_WAKE_ALIASES`: comma-separated extra accepted renderings (observed ASR variants); extends matching, grammar and cleanup.
-- `LARI_WAKE_OBSERVED_JUNK`: comma-separated spurious transcript prefixes observed per installation (empty by default); text cleanup only, never creates wake triggers.
-- `LARI_WAKE_CONFIRM`: second local gate before the paid provider opens (default on). It vetoes only a confident mismatch — both local recognizers clearly transcribing non-wake speech — and passes every doubt, so an ASR mishearing never kills a real wake. The slow local model runs only on the veto path, never on real wakes. Set `0` to disable if a real wake is ever lost; add the lost rendering to `LARI_WAKE_ALIASES` instead when possible.
-- `LARI_STT_KEYTERMS`: comma-separated vocabulary (names, places) biased in cloud STT; the realtime path drops terms longer than 20 characters.
-- `LARI_WAKE_RE`: full command-regex override for advanced calibration.
-- `LARI_REALTIME_DAILY_SECONDS`: local limit on seconds sent to Realtime, **not** a hard account spending limit.
-
-See `.env.example` for a minimal, nonsecret template. The UI brand is independent of the voice identity. Avoid putting installation-specific private URLs, recordings or downloaded models into repository files.
-
-## PWA & usage reporting
-
-Add the page to your home screen (PWA): the manifest and service worker make it open fullscreen and keep the shell available offline, so a closed connection shows as disconnected instead of a blank tab. The monthly usage report is served at `/<token>/usage` (turns, paid realtime seconds, local turns) and summarized in the UI; set `LARI_USAGE_EUR_PER_MIN` in your private environment to attach a cost estimate from your own provider rate — no price is ever hardcoded.
-
-## Privacy, costs and testing
-
-- Wake confirmation uses Vosk plus local faster-whisper. ElevenLabs Realtime opens **only after** the local gate. If Realtime is unavailable or reaches its local usage limit, transcription falls back to local STT rather than paid batch. Local models consume CPU; ElevenLabs incurs provider usage when selected. The Vosk gate is a deliberately loose candidate detector: its constrained grammar maps near-miss speech onto the wake phrase, so strict rejection happens when the command is extracted from the transcript.
-- The microphone is muted while the phone plays the response and through the echo tail. The interrupt button is **not** voice barge-in.
-- The token-protected diagnostic route `/<token>/debug/last.wav` can return captured microphone audio. Limit token access, do not publish recordings, and remove/restrict this route if remote diagnostics are unwanted.
-- Tests run without provider credentials or private recordings:
-
-```bash
-.venv/bin/python -m unittest discover -q
-.venv/bin/python -m py_compile lari/*.py lari/*/*.py
-```
-
-`scripts/bench_wake_gate.py` is the second gate's A/B benchmark: it replays real recordings through the candidate gate and the veto and reports the three decision numbers (false negatives on real wakes, added latency, candidate seconds kept away from the paid provider).
-
-A green unit suite is not an on-phone wake test: validate wake → transcription → Hermes → audible TTS on the actual device before changing the wake configuration.
+Roman households kept Lares: spirits of the hearth and family. Lari takes its name from them; each satellite is a Lare, represented by a flame. In the artwork, the Lare rides on Hermes' shoulder: the satellite and its assistant.
 
 ## License
 
