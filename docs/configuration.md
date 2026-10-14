@@ -8,11 +8,14 @@ The bridge takes one immutable settings snapshot; restart it after environment c
 | --- | --- | --- |
 | `LARI_HERMES_ROOT` | `~/.hermes/hermes-agent` | Hermes tree for optional wake-engine import and CLI fallback; expands `~`. |
 | `LARI_TOKEN` | `empty` | Secret path token; an empty value makes the bridge reject token-scoped requests. |
-| `LARI_DESKTOP_URL` | `empty` | Complete private satellite page URL for remote desktop mode; see the desktop URL restrictions. |
+| `LARI_DESKTOP_URL` | `empty` | Complete private satellite page URL for remote desktop mode; see the desktop URL restrictions. It accepts `device` and `raw=1` as query parameters. |
+| `LARI_DEVICE` | `empty` | Optional device identity for the desktop host, validated like the page's `?device=` (lowercase letters, digits and dashes). Added to the page and WebSocket URL of both the local and the remote bridge, and it overrides a `device` parameter in `LARI_DESKTOP_URL`; an invalid name is ignored with a warning. |
 | `LARI_PORT` | `8643` | Listener port for module startup and desktop installation; integer 1–65535. Uvicorn CLI needs its own port argument. |
 | `LARI_HERMES_API` | `http://127.0.0.1:8642` | Hermes API base URL; requests append `/v1/chat/completions`. |
 | `LARI_HERMES_KEY` | `empty` | Optional Hermes bearer API key. |
-| `LARI_SESSION_KEY` | `lari` | Base Hermes conversation key; `default` uses it unchanged, other devices use `<base>-<device>`. |
+| `LARI_SESSION_KEY` | `lari` | Base Hermes conversation key; `default` uses it unchanged, other devices use `<base>-<device>`. In Hermes this key scopes long-term memory, not the transcript. |
+| `LARI_SESSION_STATE` | `~/.local/state/lari/sessions.json` | Where the bridge remembers one Hermes transcript id per device key, so a reconnection resumes the same conversation. Created mode `0600` with atomic writes; a missing, unreadable or corrupt file is ignored. |
+| `LARI_SESSION_RESUME` | `1` | `1` resumes the remembered transcript id; `0` disables that memory (each turn then relies on Hermes deriving an id from the first message). |
 | `LARI_HERMES_PROVIDER` | `empty` | Optional per-request provider override; empty follows the Hermes profile. |
 | `LARI_HERMES_MODEL` | `empty` | Optional per-request model override; empty follows the Hermes profile. |
 | `LARI_VOICE_SYSTEM` | `built-in Italian prompt (exact value below)` | System message for Hermes: tolerate imperfect transcription, give brief spoken Italian replies and use tools only when needed. |
@@ -21,7 +24,6 @@ The bridge takes one immutable settings snapshot; restart it after environment c
 | `LARI_STT_BACKEND` | `whisper` | One of `whisper`, `vosk`, `elevenlabs_realtime`, `elevenlabs`, `groq`, `openai`; unsupported values fail validation. |
 | `LARI_VOSK_MODEL_DIR` | `<repo>/models/vosk-model-small-it-0.22` | Extracted Vosk directory for wake and local transcription; must contain `am/final.mdl`. |
 | `LARI_STT_LANG` | `it` | Local Whisper language; empty enables automatic detection. Also used to derive an unspecified wake phrase, with the caveat below. |
-| `LARI_STT_GATE` | `empty` | Loaded into `Settings.stt_gate`; currently read but not used at runtime. |
 | `LARI_WAKE_PROVIDER` | `whisper` | Default energy VAD plus local Vosk gate; other values are forwarded to the optional Hermes wake engine. |
 | `LARI_WAKE_CONFIRM` | `1` | Enable second local confirmation gate; only `0` and `1` accepted. |
 | `LARI_SENSITIVITY` | `0.5` | Sensitivity passed to the optional Hermes wake engine; finite number 0–1. |
