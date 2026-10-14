@@ -17,6 +17,15 @@ class ProvenWakeParityTests(unittest.TestCase):
     def setUp(self):
         self.cfg = build_wake_config("ehi lari")
 
+    def test_public_tree_ships_observed_junk_empty(self):
+        self.assertEqual(wake_config.OBSERVED_JUNK, {})
+
+    def test_installation_junk_joins_legacy_junk_in_the_same_cleanup(self):
+        with patch.dict(wake_config.OBSERVED_JUNK, {"lari": ("larix",)}):
+            cfg = build_wake_config("ehi lari", observed_junk=("spurio",))
+        self.assertEqual(cfg.strip_junk("larix spurio hey dimmi"), "hey dimmi")
+        self.assertEqual(cfg.strip_junk("spurio larix hey dimmi"), "hey dimmi")
+
     def test_grammar_matches_the_proven_list_exactly(self):
         self.assertEqual(self.cfg.grammar,
                          ("hey lari", "ehi lari", "lari", "[unk]"))

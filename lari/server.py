@@ -20,7 +20,21 @@ USAGE_LEDGER = UsageLedger(settings=_SETTINGS)
 BASE_DIR = Path(__file__).resolve().parent.parent
 TOKEN = _SETTINGS.token
 SAMPLE_RATE = 16000
-log = logging.getLogger("lari")
+
+
+def _configure_logging():
+    """Enable bridge diagnostics for both module and Uvicorn CLI startup."""
+    logger = logging.getLogger("lari")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+log = _configure_logging()
 
 app = FastAPI(title="Lari")
 _sessions: set[Session] = set()

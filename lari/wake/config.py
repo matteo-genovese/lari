@@ -177,7 +177,8 @@ class WakeConfig:
 
 def build_wake_config(phrase: str, aliases: Iterable[str] = (),
                       vocab: Iterable[str] = (),
-                      command_override: str | None = None) -> WakeConfig:
+                      command_override: str | None = None,
+                      observed_junk: tuple[str, ...] = ()) -> WakeConfig:
     phrase = normalize(phrase)
     words = phrase.split()
     if not words or not any(c.isalpha() for c in phrase):
@@ -216,10 +217,14 @@ def build_wake_config(phrase: str, aliases: Iterable[str] = (),
     # Junk cleanup: short interjections, observed mis-renderings of this core,
     # and every word of a configured alias.  Deliberately narrower than the
     # wake interjection set so real request words survive ("E che ne dici?").
-    junk_words = _ordered_unique([
+    wake_junk_words = _ordered_unique([
         "ehi", "hey",
         *OBSERVED_JUNK.get(core, ()),
         *(word for alias in aliases for word in alias.split()),
+    ])
+    # Installation-only additions affect cleanup, never detection or confirmation.
+    junk_words = _ordered_unique([
+        *wake_junk_words, *(normalize(word) for word in observed_junk),
     ])
     cleanup_re = re.compile(
         r"^(?:(?:%s)\b%s){1,2}" % ("|".join(re.escape(w) for w in junk_words), _SEP),
@@ -237,7 +242,7 @@ def build_wake_config(phrase: str, aliases: Iterable[str] = (),
         re.IGNORECASE,
     )
     doubt_starters = _ordered_unique(
-        _strip_accents(w) for w in (*INTERJECTIONS, *junk_words)
+        _strip_accents(w) for w in (*INTERJECTIONS, *wake_junk_words)
     )
 
     keyterms = _ordered_unique([display, twin_display, core_display])

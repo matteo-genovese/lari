@@ -185,6 +185,7 @@ cannot calibrate your room or confirm assistant credentials.
 - `LARI_VOSK_MODEL_DIR`: extracted Vosk model directory; must contain `am/final.mdl`.
 - `LARI_WAKE_PHRASE`: the wake phrase; command regex, Vosk grammar, junk cleanup and keyterms all derive from it (default `ehi lari`/`hey lari` by `LARI_STT_LANG`).
 - `LARI_WAKE_ALIASES`: comma-separated extra accepted renderings (observed ASR variants); extends matching, grammar and cleanup.
+- `LARI_WAKE_OBSERVED_JUNK`: comma-separated spurious transcript prefixes observed per installation (empty by default); text cleanup only, never creates wake triggers.
 - `LARI_WAKE_CONFIRM`: second local gate before the paid provider opens (default on). It vetoes only a confident mismatch — both local recognizers clearly transcribing non-wake speech — and passes every doubt, so an ASR mishearing never kills a real wake. The slow local model runs only on the veto path, never on real wakes. Set `0` to disable if a real wake is ever lost; add the lost rendering to `LARI_WAKE_ALIASES` instead when possible.
 - `LARI_STT_KEYTERMS`: comma-separated vocabulary (names, places) biased in cloud STT; the realtime path drops terms longer than 20 characters.
 - `LARI_WAKE_RE`: full command-regex override for advanced calibration.

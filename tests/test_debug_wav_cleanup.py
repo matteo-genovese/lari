@@ -13,6 +13,34 @@ import wave
 from lari import server
 
 
+class BridgeLoggingTests(unittest.TestCase):
+    def test_initialization_enables_info_once_on_stderr(self):
+        import subprocess
+        import sys
+        source = '''
+import logging
+import sys
+logging.basicConfig(level=logging.WARNING)
+from lari import server
+logger = logging.getLogger("lari")
+assert logger.getEffectiveLevel() == logging.INFO
+assert len(logger.handlers) == 1
+assert logger.handlers[0].stream is sys.stderr
+server._configure_logging()
+assert len(logger.handlers) == 1
+logger.info("bridge diagnostic")
+logging.getLogger("lari.stt.realtime").info("child diagnostic")
+'''
+        result = subprocess.run([sys.executable, "-c", source],
+                                cwd=Path(__file__).resolve().parent.parent,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.splitlines(), [
+            "INFO lari: bridge diagnostic",
+            "INFO lari.stt.realtime: child diagnostic",
+        ])
+
+
 async def inline_file_io(function, *args, **kwargs):
     """Exercise real file operations without an external worker-thread wakeup."""
     return function(*args)

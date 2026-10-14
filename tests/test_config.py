@@ -108,6 +108,32 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(config.load_settings({}).wake_phrase, "hey lari")
         self.assertEqual(config.load_settings({"LARI_STT_LANG": "it"}).wake_phrase, "ehi lari")
 
+    def test_empty_observed_junk_preserves_the_entire_wake_config(self):
+        for phrase in ("hey nic", "ehi lari"):
+            with self.subTest(phrase=phrase):
+                env = {"LARI_WAKE_PHRASE": phrase}
+                default = config.load_settings(env)
+                empty = config.load_settings({**env, "LARI_WAKE_OBSERVED_JUNK": ""})
+                self.assertEqual(default.wake_observed_junk, "")
+                self.assertEqual(default.wake_config, empty.wake_config)
+                for token in ("heinrich", "inc"):
+                    text = f"{token} che tempo fa"
+                    self.assertEqual(empty.wake_config.strip_junk(text), text)
+
+    def test_observed_junk_uses_alias_normalization_and_preserves_override(self):
+        raw = '  HEINRICH! , , Inc , heinrich,  due   parole  '
+        settings = config.load_settings({
+            "LARI_WAKE_OBSERVED_JUNK": raw,
+            "LARI_WAKE_ALIASES": raw,
+            "LARI_WAKE_RE": r"^ciao luna",
+        })
+        self.assertEqual(settings.wake_observed_junk, raw)
+        self.assertEqual(settings.wake_config.aliases, ("heinrich", "inc", "due parole"))
+        self.assertEqual(settings.wake_config.junk_words,
+                         ("ehi", "hey", "heinrich", "inc", "due", "parole", "due parole"))
+        self.assertEqual(settings.wake_config.command("ciao luna, dimmi"), "dimmi")
+        self.assertEqual(settings.wake_config.strip_junk("HEINRICH, INC: dimmi"), "dimmi")
+
     def test_process_cache_keeps_one_snapshot_and_preserves_offline_override(self):
         config.get_settings.cache_clear()
         self.addCleanup(config.get_settings.cache_clear)

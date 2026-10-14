@@ -132,4 +132,6 @@ def command_for_turn(text, followup, local_wake_confirmed, settings: Settings, m
         if local_wake_confirmed:
             return resolve_vosk_command(text, wake=True, followup=False, cfg=settings.wake_config)
         return resolve_command(text, 0.0, time.monotonic(), settings.wake_config)
+    if local_wake_confirmed and not (followup or manual):
+        return resolve_vosk_command(text, wake=True, followup=False, cfg=settings.wake_config)
     return resolve_command(text, float("inf") if (followup or manual) else 0.0, time.monotonic(), settings.wake_config)

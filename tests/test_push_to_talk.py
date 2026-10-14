@@ -13,6 +13,7 @@ from lari.config import load_settings
 from lari.session import MANUAL_PREROLL_S, SAMPLE_RATE, Session
 from lari import session as sessions
 from lari.stt import dispatch
+from lari.wake import config as wake_config
 
 
 class PushToTalkProtocolTests(unittest.TestCase):
@@ -41,6 +42,35 @@ class PushToTalkProtocolTests(unittest.TestCase):
             self.assertEqual(dispatch.decode_utterance(np.ones(16000), False, settings=settings, manual=True),
                              "tell me the weather")
         wake.assert_not_called()
+
+    def test_confirmed_wake_survives_missing_final_wake(self):
+        text = "Che tempo fa domani a Roma?"
+        for backend in ("whisper", "elevenlabs_realtime"):
+            with self.subTest(backend=backend):
+                settings = load_settings({"LARI_STT_BACKEND": backend})
+                self.assertEqual(dispatch.command_for_turn(text, False, True, settings), text)
+                self.assertIsNone(dispatch.command_for_turn(text, False, False, settings))
+
+    def test_manual_and_followup_keep_text_with_confirmed_local_wake(self):
+        text = "  Ehi, che tempo fa domani a Roma?  "
+        for backend in ("whisper", "elevenlabs_realtime"):
+            for confirmed in (False, True):
+                for manual, followup in ((True, False), (False, True), (True, True)):
+                    with self.subTest(backend=backend, confirmed=confirmed,
+                                      manual=manual, followup=followup):
+                        settings = load_settings({"LARI_STT_BACKEND": backend})
+                        self.assertEqual(dispatch.command_for_turn(
+                            text, followup, confirmed, settings, manual=manual), text.strip())
+
+    @patch.dict(wake_config.OBSERVED_JUNK, {}, clear=True)
+    def test_realtime_recognized_wake_and_unknown_rendering_are_unchanged(self):
+        settings = load_settings({"LARI_STT_BACKEND": "elevenlabs_realtime",
+                                  "LARI_WAKE_PHRASE": "hey nic"})
+        for confirmed in (False, True):
+            self.assertEqual(dispatch.command_for_turn(
+                "hey nic, che tempo fa?", False, confirmed, settings), "che tempo fa?")
+        text = "heinrich che tempo fa domani a roma"
+        self.assertEqual(dispatch.command_for_turn(text, False, True, settings), text)
 
     def test_english_ui_and_ptt_controls(self):
         html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()

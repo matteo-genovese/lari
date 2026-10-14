@@ -77,6 +77,7 @@ class Settings:
     usage_eur_per_min: float | None
     wake_phrase: str
     wake_aliases: str
+    wake_observed_junk: str
     stt_keyterms: str
     wake_re: str
     wake_config: WakeConfig
@@ -119,6 +120,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         env.get("LARI_STT_LANG", "")
     )
     aliases = env.get("LARI_WAKE_ALIASES", "")
+    observed_junk = env.get("LARI_WAKE_OBSERVED_JUNK", "")
     vocab = env.get("LARI_STT_KEYTERMS", "")
     wake_re = env.get("LARI_WAKE_RE", "").strip()
     rate = env.get("LARI_USAGE_EUR_PER_MIN", "").strip()
@@ -180,11 +182,13 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         usage_eur_per_min=_number(env, "LARI_USAGE_EUR_PER_MIN", "", float) if rate else None,
         wake_phrase=phrase,
         wake_aliases=aliases,
+        wake_observed_junk=observed_junk,
         stt_keyterms=vocab,
         wake_re=wake_re,
         wake_config=build_wake_config(
             phrase, aliases=aliases.split(","), vocab=vocab.split(","),
             command_override=wake_re or None,
+            observed_junk=tuple(observed_junk.split(",")),
         ),
         hf_hub_offline=env.get("HF_HUB_OFFLINE", "1"),
     )
