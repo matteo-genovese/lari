@@ -11,7 +11,9 @@ HTML = Path(__file__).resolve().parent.parent / "static" / "index.html"
 @unittest.skipUnless(shutil.which("node"), "Node is needed for the inline-browser test")
 class UsageInterfaceTests(unittest.TestCase):
     def test_tap_to_toggle_controls_and_server_resets(self):
-        script = HTML.read_text().split("<script>", 1)[1].split("</script>", 1)[0]
+        html = HTML.read_text()
+        css = html.split("<style>", 1)[1].split("</style>", 1)[0]
+        script = html.split("<script>", 1)[1].split("</script>", 1)[0]
         script = script.rsplit("})();", 1)[0] + (
             "globalThis.__testLari = {armTap, disarmTap, handleJsonFrame, setConn, "
             "setState, renderUsage, markSpeaking, stop, "
@@ -24,10 +26,12 @@ class UsageInterfaceTests(unittest.TestCase):
         harness = r'''
 const assert = require("assert/strict");
 const vm = require("vm");
+const html = HTML_SOURCE, css = CSS_SOURCE;
 const widgets = new Map();
 function widget(id){
   if (!widgets.has(id)) {
-    const classes = new Set();
+    const tag = html.match(new RegExp('<[^>]*id="' + id + '"[^>]*>'))?.[0] || "";
+    const classes = new Set((tag.match(/class="([^"]*)"/)?.[1] || "").split(/\s+/));
     widgets.set(id, {
       textContent:"", style:{}, events:{},
       classList:{add(c){classes.add(c)}, remove(c){classes.delete(c)},
@@ -39,7 +43,8 @@ function widget(id){
 }
 const context = {
   location:{pathname:"/test/", protocol:"https:", host:"example.invalid", search:""},
-  document:{getElementById:widget, addEventListener(){}}, window:{},
+  document:{getElementById:widget, addEventListener(){}, body:widget("body"),
+    querySelector:widget}, window:{},
   setInterval(){return 1}, clearInterval(){}, setTimeout(){return 1}, clearTimeout(){},
   URLSearchParams,
 };
@@ -50,9 +55,36 @@ const sent = [];
 const socket = {readyState:1, send(data){sent.push(JSON.parse(data))}, close(){}};
 const down = {type:"ptt", phase:"down"}, up = {type:"ptt", phase:"up"};
 const tap = widget("tapBtn"), hold = widget("pttBtn"), hint = widget("hint");
+// Check hiding selectors only; this mock does not implement browser layout or the CSS cascade.
+function hiddenByCss(id){
+  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(([, selectors, declarations]) =>
+    /display\s*:\s*none\b/.test(declarations) && selectors.split(",").some(selector => {
+      const parts = selector.trim().split(/\s+/);
+      if (parts.length === 2 && parts[0] === ".desktop") {
+        if (!context.document.body.classList.contains("desktop")) return false;
+        parts.shift();
+      }
+      assert.equal(parts.length, 1, "unsupported hiding selector: " + selector);
+      const target = parts[0];
+      return target === "#" + id ||
+        (target.startsWith(".") && widget(id).classList.contains(target.slice(1)));
+    }));
+}
+function visibleControls(desktop){
+  for (const id of ["pttBtn", "tapBtn", "talkPair"]) assert.equal(hiddenByCss(id), false, id);
+  for (const id of ["stopBtn", "usageStatus", "monthUsage"]) {
+    assert.equal(hiddenByCss(id), desktop, id);
+  }
+}
+assert.equal(context.document.body.classList.contains("desktop"), false);
+for (const id of ["pttBtn", "tapBtn", "stopBtn", "talkPair"]) assert.equal(hiddenByCss(id), true, id);
+// Match the classes revealed by start() once capture is active.
+for (const id of ["pttBtn", "tapBtn", "stopBtn", "talkPair"]) widget(id).classList.remove("hidden");
+visibleControls(false);
 function state(value){api.handleJsonFrame(JSON.stringify({type:"state", state:value}));}
 function ready(){
   api.configure({running:true, playing:false, ws:socket});
+  for (const id of ["pttBtn", "tapBtn", "stopBtn", "talkPair"]) widget(id).classList.remove("hidden");
   api.setConn(true);
   api.handleJsonFrame(JSON.stringify({type:"state", state:"listening", phrase:"test phrase"}));
   sent.length = 0;
@@ -139,7 +171,22 @@ disarmed();
 assert.deepEqual(sent, [down]);
 hold.events.pointerup();
 assert.deepEqual(sent, [down, up]);
+// The real desktop API activates CSS without changing manual-turn gestures.
+context.window.lariDesktop.compact();
+assert.equal(context.document.body.classList.contains("desktop"), true);
+ready();
+visibleControls(true);
+hold.events.pointerdown({preventDefault(){}, pointerId:2});
+hold.events.pointerup();
+assert.deepEqual(sent, [down, up]);
+sent.length = 0;
+tap.onclick();
+tap.onclick();
+assert.deepEqual(sent, [down, up]);
+api.stop();
+for (const id of ["pttBtn", "tapBtn", "stopBtn", "talkPair"]) assert.equal(hiddenByCss(id), true, id);
 '''
+        harness = harness.replace("HTML_SOURCE", json.dumps(html)).replace("CSS_SOURCE", json.dumps(css))
         result = subprocess.run(
             [shutil.which("node"), "-e", harness.replace("SOURCE", json.dumps(script))],
             text=True, capture_output=True, timeout=15,

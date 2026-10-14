@@ -35,12 +35,21 @@ class Socket {
 const context = {
   window:{WebSocket:Socket, __frames:42},
   document:{readyState:"complete", getElementById:id=>elements.get(id),
-    createElement(){return {setAttribute(){}}}, head:{appendChild(){}}, querySelector:()=>element("header")},
+    createElement(){return {setAttribute(){}}},
+    head:{appendChild(node){elements.set(node.id,node)}}, querySelector:()=>element("header")},
   setTimeout(fn){timers.push(fn)}, setInterval(fn){interval=fn; return 1}, clearInterval(){},
 };
 vm.createContext(context);
 vm.runInContext(SOURCE, context);
 const api = context.window.lariDesktop;
+assert.equal(elements.has("desktopHostStyle"), false);
+api.compact();
+const css = elements.get("desktopHostStyle").textContent;
+const hiddenSelectors = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  .filter(([, , declarations]) => /display\s*:\s*none\b/.test(declarations))
+  .flatMap(([, selectors]) => selectors.split(",").map(s => s.trim()));
+for (const selector of ["#pttBtn", "#tapBtn"]) assert.equal(hiddenSelectors.includes(selector), false, selector);
+for (const selector of [".usage", ".month", "#stopBtn"]) assert.equal(hiddenSelectors.includes(selector), true, selector);
 api.start(); api.start(); interval();
 assert.equal(starts,1);
 const ws = new context.window.WebSocket("wss://private.invalid/test/ws");

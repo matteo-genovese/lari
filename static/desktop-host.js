@@ -76,7 +76,7 @@
           body{padding:14px!important;border:1px solid #1e2330;border-radius:18px;overflow:hidden}
           .stage{gap:16px!important;min-height:230px}
           .orb{width:150px!important;height:180px!important}
-          .usage,.month,#stopBtn,#pttBtn{display:none!important}
+          .usage,.month,#stopBtn{display:none!important}
           .log{max-height:130px!important;min-height:42px;flex-shrink:0}
           button{padding:10px!important;font-size:14px!important}
           .hint{max-height:36px;overflow:hidden;font-size:11px!important}
