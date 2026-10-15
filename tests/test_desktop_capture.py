@@ -1,4 +1,4 @@
-"""Native capture state signals work without a display or an audio device."""
+"""Capture signals reach an explicitly typed slot without a display or audio device."""
 import importlib.util
 import unittest
 from unittest.mock import Mock, patch
@@ -9,7 +9,7 @@ from lari.desktop_voice import create_voice_client
 
 @unittest.skipUnless(importlib.util.find_spec("PySide6"), "optional desktop dependency PySide6")
 class CaptureStateTests(unittest.TestCase):
-    def test_capture_signal_forwards_audio_enum_and_reports_failure(self):
+    def test_capture_signal_reaches_typed_slot_and_reports_failure(self):
         from PySide6.QtCore import QCoreApplication, QObject, Signal
         from PySide6.QtMultimedia import QtAudio
 
@@ -30,6 +30,9 @@ class CaptureStateTests(unittest.TestCase):
             client = create_voice_client("http://localhost/token/", load_settings({}))
             self.addCleanup(client.files.cleanup)
             self.addCleanup(client.deleteLater)
+            self.assertGreaterEqual(
+                client.metaObject().indexOfSlot("on_capture_state(QAudio::State)"), 0
+            )
             with patch.object(client, "connect"), patch.object(client, "stop") as stop:
                 client.start()
                 for state in QtAudio.State:

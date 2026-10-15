@@ -70,7 +70,7 @@ class PlaybackFrames:
 
 def create_voice_client(page_url, settings, parent=None):
     # Keep desktop dependencies optional for the server and its test suite.
-    from PySide6.QtCore import QObject, Signal, QTimer, QUrl, QByteArray
+    from PySide6.QtCore import QObject, Signal, Slot, QTimer, QUrl, QByteArray
     from PySide6.QtMultimedia import QAudioSource, QAudioFormat, QAudioOutput, QMediaDevices, QMediaPlayer, QtAudio
     from PySide6.QtNetwork import QAbstractSocket
     from PySide6.QtWebSockets import QWebSocket
@@ -148,9 +148,7 @@ def create_voice_client(page_url, settings, parent=None):
                 return
             self.capture = QAudioSource(device, fmt, self)
             self.capture.setBufferSize(12800)
-            # Forward the enum in Python: PySide's dynamically registered QObject
-            # slot can fail to convert the QAudio::State meta-function argument.
-            self.capture.stateChanged.connect(lambda state: self.on_capture_state(state))
+            self.capture.stateChanged.connect(self.on_capture_state)
             self.device = self.capture.start()
             if self.device is None:
                 self.error = "Microfono non disponibile"
@@ -198,6 +196,7 @@ def create_voice_client(page_url, settings, parent=None):
             if self.running and not self.retry.isActive():
                 self.retry.start(3000)
 
+        @Slot(QtAudio.State)
         def on_capture_state(self, state):
             if state == QtAudio.State.StoppedState and self.capture and self.capture.error() != QtAudio.Error.NoError:
                 self.error = "Il microfono ha interrotto la cattura"
