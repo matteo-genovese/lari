@@ -18,6 +18,10 @@ Keep the tunnel running and set private `LARI_HERMES_API=http://127.0.0.1:8642`.
 
 For the remote desktop topology, the desktop connects to the bridge's HTTPS page while the bridge uses this tunnel to Hermes. The desktop cannot make its own loopback API reachable to a remote bridge merely by setting `LARI_DESKTOP_URL`.
 
+## Native desktop PC controls
+
+The [desktop guide](desktop.md) covers the local action catalog, same-user UNIX control socket and SSH routing installer. The bundled [Hermes skill](../integrations/hermes-desktop/SKILL.md) routes requested actions to the PC while keeping assistant execution on the server. It uses existing SSH access and literal argument arrays; a dispatch confirms launch rather than command completion.
+
 ## Another satellite client
 
 Use the token-scoped WebSocket and [protocol](protocol.md). Capture/resample to 16 kHz mono PCM16 little-endian, send JSON controls, consume semantic state and transcripts, and play binary MP3 frames after their metadata. Preserve turn IDs and sequence order, acknowledge actual playback, and wait through interruption echo tails. Manual controls use the same down/up pair as the reference page.

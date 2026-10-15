@@ -62,7 +62,6 @@ PartOf=graphical-session.target
 [Service]
 WorkingDirectory={str(ROOT).replace('%', '%%')}
 ExecStart={unit_path(python)} -m lari.desktop --background
-Environment="QTWEBENGINE_CHROMIUM_FLAGS=--disable-background-timer-throttling --disable-renderer-backgrounding"
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -78,7 +77,7 @@ exec {shlex.quote(str(python))} -m lari.desktop "$@"
     write(HOME_DIR / ".local/share/applications/lari.desktop", f'''[Desktop Entry]
 Type=Application
 Name=Lari
-Comment=Assistente vocale: popup e gestore nella barra
+Comment=Assistente vocale: mascotte sul desktop e controlli del PC
 Exec="{launcher}"
 Icon={ROOT / "static/assets/icon-192.png"}
 Terminal=false

@@ -1,8 +1,4 @@
-"""Persistent local satellite with a tray manager and wake-triggered window.
-
-Speech, microphone capture and playback use the reference browser client.
-Qt keeps the page alive even when the window is hidden.
-"""
+"""Native voice satellite with a roaming companion and local control socket."""
 from __future__ import annotations
 
 import argparse
@@ -62,210 +58,198 @@ def satellite_url(settings):
     return url + "?" + urlencode({"device": device}) if device else url
 
 
+def send_control(path, request):
+    """The same user socket works from SSH without a display or browser."""
+    import socket
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(5)
+        connection.connect(str(path))
+        connection.sendall(json.dumps(request).encode() + b"\n")
+        data = bytearray()
+        while b"\n" not in data:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > 1024 * 1024:
+                raise ValueError("Risposta desktop troppo grande")
+        return json.loads(data)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Lari: assistente vocale nella barra del desktop")
-    parser.add_argument("--background", action="store_true", help="Avvia senza aprire il popup")
-    parser.add_argument("--toggle-listening", action="store_true", help="Sospendi/riprendi il microfono")
-    parser.add_argument("--status", action="store_true", help="Stato del satellite, senza segreti")
+    parser = argparse.ArgumentParser(description="Lari: mascotte e assistente vocale sul desktop")
+    parser.add_argument("--background", action="store_true", help="Avvio automatico del satellite")
+    controls = parser.add_mutually_exclusive_group()
+    controls.add_argument("--toggle-listening", action="store_true")
+    controls.add_argument("--status", action="store_true")
+    controls.add_argument("--apps", action="store_true", help="App disponibili su questo PC")
+    controls.add_argument("--commands", action="store_true", help="Comandi desktop configurati")
+    controls.add_argument("--open-app", metavar="ID", help="Apri una app del catalogo locale")
+    controls.add_argument("--run-command", metavar="ID", help="Esegui un comando desktop configurato")
+    controls.add_argument("--exec", dest="exec_argv", nargs=argparse.REMAINDER,
+                          help="Avvia sul PC un programma con argomenti, senza shell implicita")
+    controls.add_argument("--hide-mascot", action="store_true")
+    controls.add_argument("--toggle-roaming", action="store_true")
     args = parser.parse_args()
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
     settings = load_settings()
+    socket_path = settings.runtime_dir / "lari-desktop.sock"
+    operation = ("status" if args.status else "apps" if args.apps else "commands" if args.commands else
+                 "open-app" if args.open_app else "run-command" if args.run_command else "exec" if args.exec_argv is not None else
+                 "toggle" if args.toggle_listening else "hide" if args.hide_mascot else
+                 "roaming" if args.toggle_roaming else "show")
+    request = {"operation": operation}
+    if args.open_app or args.run_command:
+        request["id"] = args.open_app or args.run_command
+    if args.exec_argv is not None:
+        request["argv"] = args.exec_argv
+    try:
+        result = send_control(socket_path, request)
+        if operation in {"status", "apps", "commands", "open-app", "run-command", "exec"}:
+            print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("ok", True) else 1
+    except (OSError, ValueError):
+        if operation != "show":
+            print(json.dumps({"ok": False, "error": "Lari desktop non è in esecuzione"}))
+            return 1
     try:
         url = satellite_url(settings)
     except ValueError as exc:
         parser.error(str(exc))
 
-    from PySide6.QtCore import QTimer, QUrl, Qt, QStandardPaths, QEvent
-    from PySide6.QtGui import QAction, QIcon
-    from PySide6.QtNetwork import QLocalServer, QLocalSocket
-    from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QSystemTrayIcon
-    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings, QWebEnginePermission, QWebEngineScript
-    from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QIcon, QAction
+    from PySide6.QtNetwork import QLocalServer
+    from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+    from .desktop_voice import create_voice_client
+    from .desktop_native import create_companion
+    from .desktop_actions import application_catalog, command_catalog, execute_action
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Lari")
     app.setDesktopFileName("lari")
     app.setQuitOnLastWindowClosed(False)
-    # A per-user local socket makes launcher/tray invocations single-instance.
-    socket_name = str(Path(QStandardPaths.writableLocation(
-        QStandardPaths.StandardLocation.RuntimeLocation)) / "lari-desktop.sock")
-    client = QLocalSocket()
-    client.connectToServer(socket_name)
-    if client.waitForConnected(500):
-        client.write(b"status" if args.status else b"toggle" if args.toggle_listening else b"show")
-        client.waitForBytesWritten(1000)
-        if args.status and client.waitForReadyRead(1000):
-            print(bytes(client.readAll()).decode())
-        return 0
-    if args.status:
-        print('{"running":false,"connected":false,"desktop":false}')
-        return 1
-    QLocalServer.removeServer(socket_name)
+    QLocalServer.removeServer(str(socket_path))
     server = QLocalServer()
     server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
-    if not server.listen(socket_name):
+    if not server.listen(str(socket_path)):
         raise RuntimeError("Impossibile avviare il gestore Lari")
-
-    class LocalPage(QWebEnginePage):
-        def acceptNavigationRequest(self, target, kind, main_frame):
-            # No external document can receive the automatic mic permission.
-            return not main_frame or target.toString() == url
-
-        def javaScriptConsoleMessage(self, level, message, line, source):
-            # Chromium messages may contain the private token URL.
-            pass
-
-    class Popup(QMainWindow):
-        def closeEvent(self, event):
-            event.ignore()
-            self.hide()
-
-        def event(self, event):
-            if event.type() == QEvent.Type.WindowDeactivate:
-                self.hide()
-            return super().event(event)
-
-    window = Popup()
-    window.setWindowTitle("Lari")
-    window.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                          | Qt.WindowType.WindowStaysOnTopHint)
-    window.setFixedSize(360, 520)
+    voice = create_voice_client(url, settings, app)
+    apps = application_catalog()
+    try:
+        commands = command_catalog(settings.desktop_commands_file)
+    except (ValueError, OSError) as error:
+        print("Configurazione comandi non valida:", type(error).__name__, file=sys.stderr)
+        commands = command_catalog(Path("/nonexistent/lari-commands"))
     icon = QIcon(str(ROOT / "static/assets/icon-192.png"))
-    window.setWindowIcon(icon)
-    view = QWebEngineView(window)
-    page = LocalPage(view)
-    view.setPage(page)
-    window.setCentralWidget(view)
-    page.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
-    page.setLifecycleState(QWebEnginePage.LifecycleState.Active)
-    # The remote bridge may predate the native API. Adapt its reference client
-    # locally; no installation or configuration change is needed on the server.
-    adapter = QWebEngineScript()
-    adapter.setName("lari-desktop-host")
-    adapter.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
-    adapter.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
-    adapter.setRunsOnSubFrames(False)
-    adapter.setSourceCode((ROOT / "static/desktop-host.js").read_text())
-    page.scripts().insert(adapter)
-    trusted_origin = QUrl(url)
-
-    def permission(request):
-        origin = request.origin()
-        if (request.permissionType() == QWebEnginePermission.PermissionType.MediaAudioCapture
-                and origin.scheme() == trusted_origin.scheme()
-                and origin.host() == trusted_origin.host()
-                and origin.port() == trusted_origin.port()):
-            request.grant()
-        else:
-            request.deny()
-
-    page.permissionRequested.connect(permission)
-    status = {"running": False, "state": "idle", "connected": False}
-    desired_listening = True
-    loaded = False
-    last_state = "idle"
-    pending_control = False
-
-    def show():
-        screen = app.screenAt(window.cursor().pos()) or app.primaryScreen()
-        area = screen.availableGeometry()
-        window.move(area.right() - window.width() - 16, area.top() + 42)
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
     tray = QSystemTrayIcon(icon, app)
     menu = QMenu()
+    companion, bubble = create_companion(app, voice, settings, menu)
     status_action = menu.addAction("Lari · connessione in corso…")
     status_action.setEnabled(False)
     menu.addSeparator()
-    menu.addAction("Apri Lari", show)
-    pause_action = QAction("Sospendi ascolto", menu)
-    menu.addAction(pause_action)
+    menu.addAction("Mostra la fiammetta", companion.show_companion)
+    menu.addAction("Parla con Lari", bubble.reveal)
+    pause_action = menu.addAction("Sospendi ascolto")
+    pause_action.triggered.connect(lambda: voice.stop() if voice.running else voice.start())
+    roam_action = menu.addAction("Passeggia sullo schermo")
+    roam_action.setCheckable(True)
+    roam_action.setChecked(companion.roaming)
+    roam_action.triggered.connect(companion.toggle_roaming)
+    menu.addAction("Nascondi la fiammetta", companion.hide)
+    apps_menu = menu.addMenu("Apri un’app")
 
-    def toggle():
-        nonlocal desired_listening, pending_control
-        desired_listening = not desired_listening
-        pending_control = True
-        pause_action.setText("Sospendi ascolto" if desired_listening else "Riprendi ascolto")
-        if loaded:
-            page.runJavaScript("window.lariDesktop?." + ("start()" if desired_listening else "stop()"))
+    def act(request):
+        result = execute_action(request, apps, commands)
+        if result.get("ok") and result.get("dispatched"):
+            bubble.say("assistant", "Avviato: " + result["dispatched"])
+        return result
 
-    pause_action.triggered.connect(toggle)
-    menu.addAction("Nascondi popup", window.hide)
+    for app_id, entry in sorted(apps.items(), key=lambda item: item[1]["name"].casefold()):
+        apps_menu.addAction(entry["name"], lambda app_id=app_id: act({"operation": "open-app", "id": app_id}))
+    commands_menu = menu.addMenu("Comandi del PC")
+    for command in sorted(commands):
+        commands_menu.addAction(command, lambda command=command: act({"operation": "run-command", "id": command}))
     menu.addSeparator()
     menu.addAction("Esci da Lari", app.quit)
     tray.setContextMenu(menu)
-    tray.activated.connect(lambda reason: show() if reason in (
+    tray.activated.connect(lambda reason: companion.show_companion() if reason in (
         QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)
     tray.show()
+
+    def status():
+        result = voice.status()
+        result.update({"mascot_visible": companion.isVisible(), "roaming": companion.roaming,
+                       "position": [companion.position.x(), companion.position.y()]})
+        return result
+
+    def dispatch(request):
+        if not isinstance(request, dict):
+            return {"ok": False, "error": "Richiesta non valida"}
+        operation = request.get("operation")
+        if operation == "status":
+            return status()
+        if operation in {"apps", "commands", "open-app", "run-command", "exec"}:
+            return act(request)
+        if operation == "toggle":
+            voice.stop() if voice.running else voice.start()
+        elif operation == "show":
+            companion.show_companion()
+        elif operation == "hide":
+            companion.hide()
+            bubble.hide()
+        elif operation == "roaming":
+            companion.toggle_roaming()
+            roam_action.setChecked(companion.roaming)
+        else:
+            return {"ok": False, "error": "Controllo sconosciuto"}
+        return {"ok": True}
 
     def receive():
         while server.hasPendingConnections():
             connection = server.nextPendingConnection()
-            def dispatch(connection=connection):
-                command = bytes(connection.readAll()).decode()
-                if command == "status":
-                    connection.write(json.dumps(status).encode())
-                    connection.flush()
-                elif command == "toggle":
-                    toggle()
-                else:
-                    show()
+            connection.setProperty("request_buffer", b"")
+            def read(connection=connection):
+                data = connection.property("request_buffer") + bytes(connection.readAll())
+                if len(data) > 8192:
+                    connection.disconnectFromServer()
+                    return
+                if b"\n" not in data and data not in {b"show", b"status", b"toggle"}:
+                    connection.setProperty("request_buffer", data)
+                    return
+                try:
+                    request = ({"operation": data.decode()} if data in {b"show", b"status", b"toggle"}
+                               else json.loads(data.split(b"\n", 1)[0]))
+                    response = dispatch(request)
+                except (ValueError, TypeError):
+                    response = {"ok": False, "error": "Richiesta non valida"}
+                connection.write(json.dumps(response, ensure_ascii=False).encode() + b"\n")
+                connection.flush()
                 connection.disconnectFromServer()
-            connection.readyRead.connect(dispatch)
+            connection.readyRead.connect(read)
             connection.disconnected.connect(connection.deleteLater)
             if connection.bytesAvailable():
-                dispatch()
+                read()
     server.newConnection.connect(receive)
 
-    def on_load(ok):
-        nonlocal loaded
-        loaded = ok
-        if ok:
-            page.runJavaScript("window.lariDesktop?.compact()")
-            if desired_listening:
-                page.runJavaScript("window.lariDesktop?.start()")
-        if not ok:
-            status_action.setText("Lari · server non disponibile")
-            tray.setToolTip(status_action.text())
-            QTimer.singleShot(3000, lambda: view.load(QUrl(url)))
-    view.loadFinished.connect(on_load)
-
-    def update(raw):
-        nonlocal last_state, desired_listening, pending_control
-        if not raw:
-            return
-        status.update(json.loads(raw))
-        if status.pop("hideRequested", False):
-            window.hide()
-        state = status.get("state", "idle")
-        if pending_control:
-            if status.get("running") == desired_listening and not status.get("starting"):
-                pending_control = False
-        elif not status.get("starting"):
-            desired_listening = status.get("running", False)
-        if should_open_popup(last_state, state, status.get("connected")):
-            show()
-        last_state = state
-        text = ("microfono sospeso" if not desired_listening else
-                "errore microfono/voce" if state == "error" else
-                "connessione in corso…" if not status.get("connected") else
-                f"in ascolto · {status.get('phrase') or settings.wake_phrase}" if state == "listening" else state)
+    def update_status():
+        text = ("microfono sospeso" if not voice.running else
+                voice.error if voice.error else "connessione in corso…" if not voice.connected else
+                f"in ascolto · {voice.phrase}" if voice.state == "listening" else voice.state)
         status_action.setText("Lari · " + text)
         tray.setToolTip(status_action.text())
-        pause_action.setText("Sospendi ascolto" if desired_listening else "Riprendi ascolto")
-
-    poll = QTimer(app)
-    poll.timeout.connect(lambda: page.runJavaScript(
-        "window.lariDesktop ? JSON.stringify(window.lariDesktop.status()) : ''", update) if loaded else None)
-    poll.start(250)
-    view.load(QUrl(url))
-    if not args.background:
-        show()
+        pause_action.setText("Sospendi ascolto" if voice.running else "Riprendi ascolto")
+    voice.status_changed.connect(update_status)
+    companion.show_companion()
+    voice.start()
+    # Let Python process termination signals even while the Qt event loop is idle.
+    tick = QTimer(app)
+    tick.timeout.connect(lambda: None)
+    tick.start(500)
     signal.signal(signal.SIGTERM, lambda *_: app.quit())
     signal.signal(signal.SIGINT, lambda *_: app.quit())
+    app.aboutToQuit.connect(voice.shutdown)
     app.aboutToQuit.connect(server.close)
     return app.exec()
 

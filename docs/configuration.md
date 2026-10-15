@@ -10,6 +10,8 @@ The bridge takes one immutable settings snapshot; restart it after environment c
 | `LARI_TOKEN` | `empty` | Secret path token; an empty value makes the bridge reject token-scoped requests. |
 | `LARI_DESKTOP_URL` | `empty` | Complete private satellite page URL for remote desktop mode; see the desktop URL restrictions. It accepts `device` and `raw=1` as query parameters. |
 | `LARI_DEVICE` | `empty` | Optional device identity for the desktop host, validated like the page's `?device=` (lowercase letters, digits and dashes). Added to the page and WebSocket URL of both the local and the remote bridge, and it overrides a `device` parameter in `LARI_DESKTOP_URL`; an invalid name is ignored with a warning. |
+| `LARI_DESKTOP_ROAM` | `1` | Initial native companion roaming preference; persisted user preference takes precedence. Only `0` and `1` accepted. |
+| `LARI_DESKTOP_COMMANDS` | `~/.config/lari/commands.json` | Optional named desktop commands as a JSON object mapping names to argv arrays; expands `~`. |
 | `LARI_PORT` | `8643` | Listener port for module startup and desktop installation; integer 1–65535. Uvicorn CLI needs its own port argument. |
 | `LARI_HERMES_API` | `http://127.0.0.1:8642` | Hermes API base URL; requests append `/v1/chat/completions`. |
 | `LARI_HERMES_KEY` | `empty` | Optional Hermes bearer API key. |
@@ -69,7 +71,7 @@ Sei l'assistente vocale di un assistente personale. Le battute ti arrivano da un
 
 ## Other environment inputs
 
-`config.py` also reads `ELEVENLABS_API_KEY`, `GROQ_API_KEY` and `OPENAI_API_KEY` (all empty by default), and `HF_HUB_OFFLINE` (default `1`). Local STT needs no provider key. Realtime failure/cap exhaustion uses local fallback, not paid batch.
+`config.py` also reads `ELEVENLABS_API_KEY`, `GROQ_API_KEY` and `OPENAI_API_KEY` (all empty by default), `HF_HUB_OFFLINE` (default `1`), and `XDG_RUNTIME_DIR` (default `/run/user/<uid>`) for the native control socket. Local STT needs no provider key. Realtime failure/cap exhaustion uses local fallback, not paid batch.
 
 `LARI_STT_LANG` controls local Whisper; batch ElevenLabs/Groq/OpenAI requests and the ElevenLabs Realtime URL currently specify Italian independently. The wake style prompt is also Italian. Changing the local language does not translate all provider requests or the voice system message.
 

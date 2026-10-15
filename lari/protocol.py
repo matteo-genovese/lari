@@ -7,7 +7,7 @@ Outbound: the fifteen constructors below. audio_chunk/audio metadata precedes
 one binary MP3 frame; audio_end ends the segmented reading. Turn identifiers
 scope playback and interruption. Optional fields are omitted, never invented.
 States describe the interaction, independently of STT/SSE/TTS internals.
-See README for the wire table; this module is the sole message factory.
+See docs/protocol.md for the wire table; this module is the sole message factory.
 """
 from __future__ import annotations
 
@@ -109,3 +109,24 @@ def approval(*, turn, approval) -> dict:
 
 def fatal(*, error) -> dict:
     return _message("fatal", error=error)
+
+
+# Native satellite controls use the same inbound contract as the browser.
+def client_ping() -> dict:
+    return _message("ping")
+
+
+def client_ptt(*, phase) -> dict:
+    if phase not in {"down", "up"}:
+        raise ValueError("PTT phase must be down or up")
+    return _message("ptt", phase=phase)
+
+
+def client_interrupt(*, turn) -> dict:
+    return _message("interrupt", turn=turn)
+
+
+def client_playback_done(*, turn, status="completed") -> dict:
+    if status not in {"completed", "failed"}:
+        raise ValueError("Invalid playback status")
+    return _message("playback_done", turn=turn, status=status)

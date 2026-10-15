@@ -28,7 +28,7 @@ Satellites use the same WebSocket protocol. The device contract supports `?devic
 
 ## Requirements
 
-Python 3.11/3.12, Hermes with its API server enabled, and an extracted Vosk model for local wake detection. The default local Whisper path also needs its model available. Mobile microphone access requires HTTPS; localhost is exempt. Desktop use adds PySide6 and a graphical session with tray support. A Hermes checkout is needed only for the optional Hermes wake engine or CLI fallback.
+Python 3.11/3.12, Hermes with its API server enabled, and an extracted Vosk model for local wake detection. The default local Whisper path also needs its model available. Mobile microphone access requires HTTPS; localhost is exempt. Desktop use adds PySide6 and a graphical session with tray support; its native flame companion roams the desktop and offers conversation and local PC controls. A Hermes checkout is needed only for the optional Hermes wake engine or CLI fallback.
 
 ## Quick start
 
@@ -60,7 +60,7 @@ See [installation](docs/installation.md) for manual setup, systemd, HTTPS and a 
 | [Installation](docs/installation.md) | Dependencies, services, HTTPS and verification |
 | [Configuration](docs/configuration.md) | Every `LARI_*` setting read by `lari/config.py` |
 | [Protocol](docs/protocol.md) | WebSocket frames, HTTP routes, device identity and status |
-| [Desktop](docs/desktop.md) | Qt host, installer, tray and remote client |
+| [Desktop](docs/desktop.md) | Native companion, voice, PC controls, installer and remote client |
 | [Integrations](docs/integrations.md) | Status bar, Hermes tunnel and other clients |
 | [Calibration](docs/calibration.md) | Wake phrase, VAD, follow-up and echo |
 | [Troubleshooting](docs/troubleshooting.md) | Logs, probes and known failure modes |

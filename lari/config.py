@@ -36,6 +36,9 @@ class Settings:
     token: str = field(repr=False)
     desktop_url: str = field(repr=False)
     device: str
+    desktop_roam: bool
+    desktop_commands_file: Path
+    runtime_dir: Path
     port: int
     hermes_api: str
     hermes_key: str = field(repr=False)
@@ -140,6 +143,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         token=env.get("LARI_TOKEN", "").strip(),
         desktop_url=env.get("LARI_DESKTOP_URL", "").strip(),
         device=device,
+        desktop_roam=_bool(env, "LARI_DESKTOP_ROAM", "1"),
+        desktop_commands_file=Path(env.get("LARI_DESKTOP_COMMANDS", str(Path.home() / ".config/lari/commands.json"))).expanduser(),
+        runtime_dir=Path(env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")),
         port=_number(env, 'LARI_PORT', '8643', int, minimum=1, maximum=65535),
         hermes_api=env.get("LARI_HERMES_API", "http://127.0.0.1:8642"),
         hermes_key=env.get("LARI_HERMES_KEY", ""),

@@ -25,3 +25,4 @@ graphify-out/
 
 # Local OS/editor artifacts
 .DS_Store
+integrations/hermes-desktop/scripts/config.json
