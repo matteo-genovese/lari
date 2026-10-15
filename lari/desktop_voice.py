@@ -148,7 +148,9 @@ def create_voice_client(page_url, settings, parent=None):
                 return
             self.capture = QAudioSource(device, fmt, self)
             self.capture.setBufferSize(12800)
-            self.capture.stateChanged.connect(self.on_capture_state)
+            # Forward the enum in Python: PySide's dynamically registered QObject
+            # slot can fail to convert the QAudio::State meta-function argument.
+            self.capture.stateChanged.connect(lambda state: self.on_capture_state(state))
             self.device = self.capture.start()
             if self.device is None:
                 self.error = "Microfono non disponibile"
