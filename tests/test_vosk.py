@@ -3,6 +3,7 @@ from dataclasses import replace
 from lari.config import get_settings, load_settings
 import json
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -162,7 +163,9 @@ class VoskSessionTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             sent.append(message)
 
-        session = session_module.Session(send, send_audio, settings=get_settings())
+        root = self.enterContext(tempfile.TemporaryDirectory())
+        settings = replace(get_settings(), session_state=Path(root) / "sessions.json")
+        session = session_module.Session(send, send_audio, settings=settings)
         session._record_utterance = AsyncMock(return_value=np.ones(audio_module.SAMPLE_RATE, dtype=np.int16))
         session._speak = AsyncMock()
         session._record_usage = Mock()
@@ -175,7 +178,7 @@ class VoskSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decode.call_args.args[1], False)
         agent.assert_awaited_once()
         self.assertEqual(agent.call_args.args, ("please help",))
-        self.assertIsNone(agent.call_args.kwargs["session_id"])
+        self.assertRegex(agent.call_args.kwargs["session_id"], r"^lari-default-[0-9a-f]{8}$")
         self.assertTrue(
             any(msg.get("type") == "transcript" and msg.get("text") == "please help" for msg in sent)
         )

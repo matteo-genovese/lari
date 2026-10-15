@@ -116,7 +116,8 @@ class AgentDispatchTests(unittest.TestCase):
             first, second, session_id = asyncio.run(turns())
 
         self.assertEqual((first, second, session_id), ('prima', 'seconda', 'transcript-1'))
-        self.assertNotIn('X-Hermes-Session-Id', requests[0].headers)
+        self.assertRegex(requests[0].headers['X-Hermes-Session-Id'],
+                         r'^lari-default-[0-9a-f]{8}$')
         self.assertEqual(requests[1].headers['X-Hermes-Session-Id'], 'transcript-1')
         self.assertEqual(requests[0].headers['X-Hermes-Session-Key'], self.settings.session_key)
         self.assertEqual(requests[1].headers['X-Hermes-Session-Key'], self.settings.session_key)
@@ -128,7 +129,7 @@ class AgentDispatchTests(unittest.TestCase):
             requests.append(request)
             text = __import__('json').loads(request.content)['messages'][-1]['content']
             ids = {'a-first': 'transcript-a', 'b-first': 'transcript-b'}
-            response_id = request.headers.get('X-Hermes-Session-Id') or ids[text]
+            response_id = ids.get(text) or request.headers['X-Hermes-Session-Id']
             return httpx.Response(
                 200, json={'choices': [{'message': {'content': text}}]},
                 headers={'X-Hermes-Session-Id': response_id},
@@ -158,8 +159,10 @@ class AgentDispatchTests(unittest.TestCase):
             __import__('json').loads(request.content)['messages'][-1]['content']: request
             for request in requests
         }
-        self.assertNotIn('X-Hermes-Session-Id', by_text['a-first'].headers)
-        self.assertNotIn('X-Hermes-Session-Id', by_text['b-first'].headers)
+        self.assertRegex(by_text['a-first'].headers['X-Hermes-Session-Id'],
+                         r'^lari-phone-[0-9a-f]{8}$')
+        self.assertRegex(by_text['b-first'].headers['X-Hermes-Session-Id'],
+                         r'^lari-desktop-[0-9a-f]{8}$')
         self.assertEqual(by_text['a-second'].headers['X-Hermes-Session-Id'], 'transcript-a')
         self.assertEqual(by_text['b-second'].headers['X-Hermes-Session-Id'], 'transcript-b')
 
@@ -645,7 +648,7 @@ class SegmentedPlaybackTests(unittest.TestCase):
             sent.append(value)
 
         async def fake_stream(text, session_id=None, on_delta=None, on_approval=None, *, settings=None, on_session_id=None):
-            self.assertIsNone(session_id)
+            self.assertRegex(session_id, r'^lari-default-[0-9a-f]{8}$')
             await on_delta('Prima frase. ')
             await on_delta('Seconda frase.')
             return hermes_client.HermesReply('Prima frase. Seconda frase.', 'done-id')

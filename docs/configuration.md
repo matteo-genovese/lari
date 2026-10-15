@@ -15,7 +15,7 @@ The bridge takes one immutable settings snapshot; restart it after environment c
 | `LARI_HERMES_KEY` | `empty` | Optional Hermes bearer API key. |
 | `LARI_SESSION_KEY` | `lari` | Base Hermes conversation key; `default` uses it unchanged, other devices use `<base>-<device>`. In Hermes this key scopes long-term memory, not the transcript. |
 | `LARI_SESSION_STATE` | `~/.local/state/lari/sessions.json` | Where the bridge remembers one Hermes transcript id per device key, so a reconnection resumes the same conversation. Created mode `0600` with atomic writes; a missing, unreadable or corrupt file is ignored. |
-| `LARI_SESSION_RESUME` | `1` | `1` resumes the remembered transcript id; `0` disables that memory (each turn then relies on Hermes deriving an id from the first message). |
+| `LARI_SESSION_RESUME` | `1` | `1` enables transcript memory: reuse the stored id, or generate `lari-<device>-<8 hex digits>` and save it before sending. If saving fails, send no id. `0` disables generation, sending and saving (each turn then relies on Hermes deriving an id from the first message). |
 | `LARI_HERMES_PROVIDER` | `empty` | Optional per-request provider override; empty follows the Hermes profile. |
 | `LARI_HERMES_MODEL` | `empty` | Optional per-request model override; empty follows the Hermes profile. |
 | `LARI_VOICE_SYSTEM` | `built-in Italian prompt (exact value below)` | System message for Hermes: tolerate imperfect transcription, give brief spoken Italian replies and use tools only when needed. |

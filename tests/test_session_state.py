@@ -107,14 +107,18 @@ class SessionResumeTests(unittest.IsolatedAsyncioTestCase):
         self.received = []
         self.ids = {}
         self.statuses = []
+        self.on_request = None
         self.stream_body = b'data: {"choices":[{"delta":{"content":"Ciao."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
         real_client = self.client_class = httpx.AsyncClient
 
         def handler(request):
             key = request.headers["X-Hermes-Session-Key"]
             self.received.append((key, request.headers.get("X-Hermes-Session-Id")))
+            if self.on_request is not None:
+                self.on_request(request)
             status = self.statuses.pop(0) if self.statuses else 200
-            headers = {"X-Hermes-Session-Id": self.ids.get(key, "id-" + key)}
+            response_id = self.ids.get(key, "id-" + key)
+            headers = {"X-Hermes-Session-Id": response_id} if response_id else {}
             if json.loads(request.content)["stream"]:
                 return httpx.Response(status, headers=headers, content=self.stream_body)
             return httpx.Response(status, headers=headers,
@@ -138,7 +142,7 @@ class SessionResumeTests(unittest.IsolatedAsyncioTestCase):
             original = self.session(device)
             await self.call(original)
             key = original._hermes_settings.session_key
-            self.assertEqual(self.received[-1], (key, None))
+            self.assertRegex(self.received[-1][1], rf"^lari-{device}-[0-9a-f]{{8}}$")
             restarted = self.session(device)
             self.ids[key] = "rotated-" + device
             await self.call(restarted, True)
@@ -147,14 +151,72 @@ class SessionResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.received[-1], (key, "rotated-" + device))
         self.assertEqual(len(json.loads(self.path.read_text())), 3)
 
-    async def test_missing_corrupt_or_invalid_file_sends_no_id(self):
+    async def test_missing_corrupt_or_invalid_file_generates_id(self):
         for content in (None, "", "{broken", json.dumps({SessionState(self.settings).key: "bad\nid"})):
             if self.path.exists():
                 self.path.unlink()
             if content is not None:
                 self.path.write_text(content)
             await self.call(self.session(), True)
-            self.assertIsNone(self.received[-1][1])
+            self.assertRegex(self.received[-1][1], r"^lari-default-[0-9a-f]{8}$")
+
+    async def test_first_id_is_saved_before_request_and_reused_without_generation(self):
+        for streaming in (False, True):
+            if self.path.exists():
+                self.path.unlink()
+            session = self.session("desk-buddy-phone")
+            key = session._hermes_settings.session_key
+            candidate = "lari-desk-buddy-phone-1234abcd"
+            self.ids[key] = None
+
+            def check_saved(request):
+                self.assertEqual(request.headers["X-Hermes-Session-Id"], candidate)
+                self.assertEqual(SessionState(session._hermes_settings).get(), candidate)
+
+            self.on_request = check_saved
+            with patch("lari.session.secrets.token_hex", return_value="1234abcd") as generate:
+                await self.call(session, streaming)
+                await self.call(self.session("desk-buddy-phone"), streaming)
+            generate.assert_called_once_with(4)
+            self.assertEqual(list(json.loads(self.path.read_text()).values()), [candidate])
+
+    async def test_two_new_devices_with_identical_text_save_distinct_ids(self):
+        sessions = [self.session("desk-buddy-phone"), self.session("hp-desktop")]
+
+        def check_saved(request):
+            session = sessions[len(self.received) - 1]
+            self.assertEqual(SessionState(session._hermes_settings).get(),
+                             request.headers["X-Hermes-Session-Id"])
+
+        self.on_request = check_saved
+        for session in sessions:
+            self.ids[session._hermes_settings.session_key] = None
+            await self.call(session)
+        ids = [value for _, value in self.received]
+        self.assertEqual(len(set(ids)), 2)
+        self.assertEqual(set(json.loads(self.path.read_text()).values()), set(ids))
+
+    async def test_populated_state_does_not_generate(self):
+        SessionState(self.settings).save("saved")
+        with patch("lari.session.secrets.token_hex") as generate:
+            await self.call(self.session())
+        generate.assert_not_called()
+        self.assertEqual(self.received[-1], ("lari", "saved"))
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory write permissions")
+    async def test_unwritable_directory_sends_no_id_and_completes_turn(self):
+        directory = self.path.parent / "readonly"
+        directory.mkdir(mode=0o500)
+        settings = replace(self.settings, session_state=directory / "sessions.json")
+        try:
+            for streaming in (False, True):
+                with self.assertLogs("lari", level="WARNING"):
+                    await self.call(self.session(settings=settings), streaming)
+                self.assertIsNone(self.received[-1][1])
+                self.assertFalse(settings.session_state.exists())
+        finally:
+            directory.chmod(0o700)
+        self.cli.assert_not_called()
 
     async def test_disabled_never_sends_or_saves_id_even_on_same_connection(self):
         SessionState(self.settings).save("saved")
@@ -162,6 +224,7 @@ class SessionResumeTests(unittest.IsolatedAsyncioTestCase):
         settings = replace(self.settings, session_resume=False)
         session = self.session(settings=settings)
         session.hermes_session_id = "memory-id"
+        generate = self.enterContext(patch("lari.session.secrets.token_hex"))
         for streaming in (False, True, False, True):
             await self.call(session, streaming)
         self.assertTrue(all(value is None for _, value in self.received))
@@ -169,6 +232,7 @@ class SessionResumeTests(unittest.IsolatedAsyncioTestCase):
         self.path.unlink()
         await self.call(self.session(settings=settings))
         self.assertFalse(self.path.exists())
+        generate.assert_not_called()
 
     async def test_4xx_forgets_and_retries_once_without_id_for_both_transports(self):
         for streaming in (False, True):
@@ -188,6 +252,21 @@ class SessionResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.received), 2)
         self.assertIsNone(SessionState(self.settings).get())
         self.cli.assert_not_called()
+
+    async def test_rejected_generated_id_is_replaced_on_next_turn(self):
+        for streaming in (False, True):
+            if self.path.exists():
+                self.path.unlink()
+            self.ids["lari"] = None
+            self.statuses = [422, 200]
+            with patch("lari.session.secrets.token_hex", side_effect=["1234abcd", "5678abcd"]):
+                await self.call(self.session(), streaming)
+                self.assertIsNone(SessionState(self.settings).get())
+                self.assertEqual(self.received[-2:],
+                                 [("lari", "lari-default-1234abcd"), ("lari", None)])
+                await self.call(self.session(), streaming)
+            self.assertEqual(self.received[-1], ("lari", "lari-default-5678abcd"))
+            self.assertEqual(SessionState(self.settings).get(), "lari-default-5678abcd")
 
     async def test_header_saved_even_if_stream_is_incomplete(self):
         self.stream_body = b'data: {"choices":[{"delta":{"content":"Parziale."}}]}\n\n'

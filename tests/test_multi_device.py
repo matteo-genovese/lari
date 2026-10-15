@@ -1,6 +1,7 @@
 """Multi-satellite identity, Hermes routing and public status contract."""
 import asyncio
 from contextlib import contextmanager
+from dataclasses import replace
 import json
 from pathlib import Path
 import shutil
@@ -52,11 +53,14 @@ class MultiDeviceTests(unittest.IsolatedAsyncioTestCase):
                                   json={"choices": [{"message": {"content": "Ciao."}}]})
 
         satellites = [self.make_session(name) for name in ("phone", "desktop", "default")]
-        with mock_http(handler), patch.object(tts, "tts", AsyncMock(return_value=b"mp3")):
+        with mock_http(handler), patch.object(tts, "tts", AsyncMock(return_value=b"mp3")), \
+                patch("lari.session.secrets.token_hex", return_value="1234abcd"):
             await asyncio.gather(*(s._ask_hermes("ciao") for s in satellites))
             await asyncio.gather(*(s._stream_hermes_speak("ciao", 0) for s in satellites))
         self.assertCountEqual(received, [
-            ("test-session-phone", None), ("test-session-desktop", None), ("test-session", None),
+            ("test-session-phone", "lari-phone-1234abcd"),
+            ("test-session-desktop", "lari-desktop-1234abcd"),
+            ("test-session", "lari-default-1234abcd"),
             ("test-session-phone", "test-session-phone-id"),
             ("test-session-desktop", "test-session-desktop-id"),
             ("test-session", "test-session-id"),
@@ -176,6 +180,8 @@ class MultiDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(active)
 
     async def test_backend_and_session_logs_keep_parallel_device_context(self):
+        # CLI fallback is available only when no transcript id is sent.
+        self.settings = replace(self.settings, session_resume=False)
         phone, desktop = self.make_session("phone"), self.make_session("desktop")
         def handler(request):
             raise httpx.ConnectError("offline")

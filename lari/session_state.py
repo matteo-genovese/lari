@@ -42,15 +42,17 @@ class SessionState:
         # Atomic replacement makes an unlocked reader see either complete file.
         return self._load().get(self.key) if self.enabled else None
 
-    def save(self, session_id: str) -> None:
+    def save(self, session_id: str) -> bool:
+        """Return whether a valid id was durably saved (or already present)."""
         if self.enabled and valid_session_id(session_id):
-            self._update(session_id)
+            return self._update(session_id)
+        return False
 
     def forget(self, rejected_id: str) -> None:
         if self.enabled:
             self._update(None, rejected_id)
 
-    def _update(self, value: str | None, rejected_id: str | None = None) -> None:
+    def _update(self, value: str | None, rejected_id: str | None = None) -> bool:
         temporary = None
         try:
             with _LOCK:
@@ -62,7 +64,7 @@ class SessionState:
                     data = self._load()
                     current = data.get(self.key)
                     if current == value or (rejected_id is not None and current != rejected_id):
-                        return
+                        return True
                     if value is None:
                         data.pop(self.key, None)
                     else:
@@ -76,9 +78,11 @@ class SessionState:
                         os.fsync(output.fileno())
                     os.replace(temporary, self.path)
                     temporary = None
+                    return True
         except (OSError, ValueError, UnicodeError):
             # Never expose ids, keys, credentials or filesystem exception text.
             log.warning("stato sessioni Hermes non aggiornabile")
+            return False
         finally:
             if temporary is not None:
                 try:

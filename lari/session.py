@@ -5,6 +5,8 @@ import asyncio
 from dataclasses import replace
 import logging
 import queue
+import re
+import secrets
 import threading
 from threading import Thread
 import time
@@ -187,6 +189,11 @@ class Session(SessionAudio, WakeWorker):
         import httpx
 
         session_id = self._session_state.get()
+        if session_id is None and self._settings.session_resume:
+            device = re.sub(r"[^a-z0-9-]", "-", self.device or "default")
+            candidate = f"lari-{device}-{secrets.token_hex(4)}"
+            if self._session_state.save(candidate):
+                session_id = candidate
         header_received = False
 
         def received_id(value):
