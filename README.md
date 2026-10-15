@@ -44,10 +44,21 @@ Review the generated private `.env`: configure the Hermes API and credentials, a
 set -a
 . ./.env
 set +a
-.venv/bin/uvicorn lari.server:app --host 127.0.0.1 --port "${LARI_PORT:-8643}"
+.venv/bin/python -m lari.server
 ```
 
-Expose the bridge through a private HTTPS network, such as Tailscale Serve. Open the token-scoped page and press **Start listening**. Keep the phone awake and the page foregrounded. The bridge can invoke Hermes tools: keep its token and network access private.
+`LARI_HOST` selects the bind IPv4 address or hostname (default: `127.0.0.1`);
+`LARI_PORT` defaults to `8643`. Two private exposure models are supported:
+
+- Keep `LARI_HOST=127.0.0.1` and use Tailscale Serve to expose
+  `http://127.0.0.1:8643` as private HTTPS. This is the model for mobile browsers,
+  which require HTTPS for microphone access.
+- Set `LARI_HOST` to the host's tailnet address (for example `100.76.72.58`)
+  for clients connecting directly through the tailnet. The bridge still serves
+  plaintext HTTP/WebSocket; Tailscale encrypts transport, but this does not provide
+  the HTTPS origin required by mobile browsers for microphone access.
+
+Open the token-scoped page and press **Start listening**. Keep the phone awake and the page foregrounded. The bridge can invoke Hermes tools: keep its token and network access private.
 
 See [installation](docs/installation.md) for manual setup, systemd, HTTPS and a WebSocket probe, or [desktop](docs/desktop.md) for the tray app.
 

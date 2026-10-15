@@ -13,6 +13,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements.lock
+      - run: pip install -r requirements.lock
       - name: Run the test suite (no Hermes source, no models, no API keys)
         run: python -m unittest discover

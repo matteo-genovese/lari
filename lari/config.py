@@ -4,9 +4,11 @@ from __future__ import annotations
 import math
 import logging
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import cache
+from ipaddress import ip_address
 from pathlib import Path
 
 from .wake.config import WakeConfig, build_wake_config, default_phrase
@@ -29,6 +31,31 @@ def validate_stt_backend(backend: str) -> str:
     return backend
 
 
+def validate_host(host: str) -> str:
+    """Accept IPv4 addresses or DNS hostnames, rejecting wildcard listeners."""
+    message = "LARI_HOST: expected an IPv4 address or valid hostname without whitespace"
+    wildcard_message = (
+        "LARI_HOST: wildcard/any addresses are not allowed; use 127.0.0.1 "
+        "behind Tailscale Serve or the host's tailnet address"
+    )
+    if host == "*":
+        raise ValueError(wildcard_message)
+    try:
+        address = ip_address(host)
+    except ValueError:
+        name = host.removesuffix(".")
+        if (not name or len(name) > 253 or all(c in "0123456789." for c in name)
+                or any(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                       is None for label in name.split("."))):
+            raise ValueError(message) from None
+    else:
+        if address.is_unspecified:
+            raise ValueError(wildcard_message)
+        if address.version != 4:
+            raise ValueError(message)
+    return host
+
+
 @dataclass(frozen=True)
 class Settings:
     """Immutable settings shareable across sessions; credentials excluded from repr."""
@@ -39,6 +66,7 @@ class Settings:
     desktop_roam: bool
     desktop_commands_file: Path
     runtime_dir: Path
+    host: str
     port: int
     hermes_api: str
     hermes_key: str = field(repr=False)
@@ -146,6 +174,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         desktop_roam=_bool(env, "LARI_DESKTOP_ROAM", "1"),
         desktop_commands_file=Path(env.get("LARI_DESKTOP_COMMANDS", str(Path.home() / ".config/lari/commands.json"))).expanduser(),
         runtime_dir=Path(env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")),
+        host=validate_host(env.get("LARI_HOST", "127.0.0.1")),
         port=_number(env, 'LARI_PORT', '8643', int, minimum=1, maximum=65535),
         hermes_api=env.get("LARI_HERMES_API", "http://127.0.0.1:8642"),
         hermes_key=env.get("LARI_HERMES_KEY", ""),

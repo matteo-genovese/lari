@@ -10,6 +10,36 @@ from lari.stt import providers as stt_backends, realtime
 
 
 class SettingsTests(unittest.TestCase):
+    def test_host_defaults_to_loopback_when_absent(self):
+        with patch.dict(os.environ, {"LARI_HOST": "100.76.72.58"}):
+            self.assertEqual(config.load_settings({}).host, "127.0.0.1")
+
+    def test_host_accepts_ipv4_and_dns_hostnames(self):
+        for host in ("127.0.0.1", "100.76.72.58", "localhost", "mg-home-01",
+                     "mg-home-01.tail17f996.ts.net", "Example.COM.", "a" * 63,
+                     ".".join(["a" * 63] * 3 + ["b" * 61])):
+            with self.subTest(host=host):
+                self.assertEqual(config.load_settings({"LARI_HOST": host}).host, host)
+
+    def test_host_rejects_empty_whitespace_and_invalid_addresses(self):
+        for host in ("", " ", "\t\n", " localhost", "localhost ", "local host",
+                     "localhost\n", "999.76.72.58", "127.0.0.01", "::1",
+                     "http://localhost", "localhost:8643", "bad_name", "-host",
+                     "host-", "a..b", ".localhost", ".", "a" * 64,
+                     ".".join(["a" * 63] * 4)):
+            with self.subTest(host=host):
+                with self.assertRaisesRegex(ValueError, "LARI_HOST: expected an IPv4 address or valid hostname"):
+                    config.load_settings({"LARI_HOST": host})
+
+    def test_host_rejects_wildcard_addresses_with_private_alternatives(self):
+        for host in ("0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "*"):
+            with self.subTest(host=host):
+                with self.assertRaisesRegex(ValueError, "LARI_HOST: wildcard/any addresses are not allowed") as error:
+                    config.load_settings({"LARI_HOST": host})
+                self.assertIn("127.0.0.1", str(error.exception))
+                self.assertIn("Tailscale Serve", str(error.exception))
+                self.assertIn("host's tailnet address", str(error.exception))
+
     def test_load_is_pure_and_uses_only_the_supplied_mapping(self):
         env = {"LARI_TOKEN": " installation-token ", "LARI_PORT": "9000"}
         with patch.dict(os.environ, {"LARI_TOKEN": "other-token"}):
