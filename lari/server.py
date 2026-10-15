@@ -243,4 +243,4 @@ async def _startup():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=_SETTINGS.port, log_level="info")
+    uvicorn.run(app, host=_SETTINGS.host, port=_SETTINGS.port, log_level="info")

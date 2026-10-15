@@ -32,10 +32,13 @@ Start from the repository root, loading the private environment:
 set -a
 . ./.env
 set +a
-.venv/bin/uvicorn lari.server:app --host 127.0.0.1 --port "${LARI_PORT:-8643}"
+.venv/bin/python -m lari.server
 ```
 
-Only source a trusted shell-compatible `.env`. `lari.server` does not load dotenv itself. `python -m lari.server` binds `0.0.0.0`; the explicit Uvicorn command above binds loopback.
+Only source a trusted shell-compatible `.env`. `lari.server` does not load dotenv itself. `python -m lari.server` binds the IPv4 address or hostname selected by `LARI_HOST` (default: `127.0.0.1`) on `LARI_PORT` (default: `8643`). Wildcard/any addresses are rejected. Two private exposure models are supported:
+
+- Keep `LARI_HOST=127.0.0.1` behind Tailscale Serve for private HTTPS, as shown below. Mobile browsers require HTTPS for microphone access.
+- Set `LARI_HOST` to the host's tailnet address (for example `100.76.72.58`) for clients connecting directly through the tailnet. HTTP/WebSocket remains plaintext at the bridge; Tailscale encrypts transport, but this does not provide the HTTPS origin required by mobile browsers for microphone access.
 
 ## User systemd service
 
@@ -49,7 +52,7 @@ After=network.target
 [Service]
 WorkingDirectory=<repo>
 EnvironmentFile=<repo>/.env
-ExecStart=<repo>/.venv/bin/python -m uvicorn lari.server:app --host 127.0.0.1 --port 8643 --no-access-log
+ExecStart=<repo>/.venv/bin/python -m lari.server
 Restart=on-failure
 UMask=0077
 
@@ -57,7 +60,7 @@ UMask=0077
 WantedBy=default.target
 ```
 
-The port in `ExecStart` must match your chosen `LARI_PORT`; this literal template uses `8643`. Then:
+The module reads `LARI_HOST` and `LARI_PORT` from `EnvironmentFile`, defaulting to `127.0.0.1` and `8643` when absent, with the same validation as the manual start above. Then:
 
 ```bash
 systemctl --user daemon-reload
@@ -69,7 +72,7 @@ The [desktop installer](desktop.md) generates its own server and desktop units; 
 
 ## Private HTTPS with Tailscale
 
-With Tailscale installed and connected on the bridge machine, a loopback listener on port `8643` can be exposed with [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve):
+With Tailscale installed and connected on the bridge machine, keep `LARI_HOST=127.0.0.1`. The loopback listener on the default `LARI_PORT=8643` can be exposed with [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) (adjust the target port if you change `LARI_PORT`):
 
 ```bash
 tailscale serve --bg http://127.0.0.1:8643
@@ -91,8 +94,9 @@ from websockets.asyncio.client import connect
 
 async def main():
     token = quote(os.environ["LARI_TOKEN"], safe="")
+    host = os.environ.get("LARI_HOST", "127.0.0.1")
     port = os.environ.get("LARI_PORT", "8643")
-    async with connect(f"ws://127.0.0.1:{port}/{token}/ws") as ws:
+    async with connect(f"ws://{host}:{port}/{token}/ws") as ws:
         initial = json.loads(await asyncio.wait_for(ws.recv(), 10))
         assert initial["type"] == "state", initial
         print(initial)

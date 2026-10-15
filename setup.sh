@@ -11,7 +11,7 @@ MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-small-it-0.22.zip
 if [ ! -d "$VENV" ]; then
     python3 -m venv "$VENV"
 fi
-"$VENV/bin/pip" install --quiet -r requirements.txt
+"$VENV/bin/pip" install --quiet -r requirements.lock
 
 if [ ! -f "$MODEL_DIR/am/final.mdl" ]; then
     echo "Downloading the Italian Vosk model (~45 MB)..."
@@ -31,4 +31,8 @@ if [ ! -f .env ]; then
 fi
 
 echo "Setup complete. Next: edit .env (Hermes endpoint, providers), then run:"
-echo "  .venv/bin/uvicorn lari.server:app --host 127.0.0.1 --port \${LARI_PORT:-8643}"
+echo "  set -a; . ./.env; set +a"
+echo "  .venv/bin/python -m lari.server"
+echo "LARI_HOST defaults to 127.0.0.1: use Tailscale Serve for private HTTPS."
+echo "For direct tailnet clients, set LARI_HOST to this host's tailnet IP in .env."
+echo "Direct access still uses plaintext HTTP/WebSocket; mobile microphones require HTTPS."
